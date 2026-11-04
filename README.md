@@ -67,7 +67,8 @@
 ### 3.1 本地（已有 venv，不重复装依赖）
 
 ```bash
-cd "D:/kai_study/学习日志/05-第五周学习"
+cd DayOne    # 仓库根目录
+# 本项目作者在 D:/kai_study/.venv 这套环境里验证，换机器的把下面 python 换成自己的即可
 
 # 1) 配置（没有 key 也能跑，会自动降级为离线基线）
 cp .env.example .env        # 然后按需填 LLM_API_KEY
@@ -299,7 +300,7 @@ python scripts/tune.py --top-k 3
 ## 8. 目录结构
 
 ```text
-05-第五周学习/
+DayOne/
 ├── app/
 │   ├── main.py                 # FastAPI 入口、lifespan、异常处理、静态资源
 │   ├── config.py               # 全部配置（pydantic-settings，读 .env）
