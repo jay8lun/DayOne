@@ -1,0 +1,35 @@
+{"id": "q01", "type": "single", "question": "入职第一天要配置哪些账号？", "expected_docs": ["新人第一周指南"], "must_contain": ["SSO"]}
+{"id": "q02", "type": "single", "question": "试用期是多久？转正主要看什么？", "expected_docs": ["导师制与学习资源"], "must_contain": ["3 个月"]}
+{"id": "q03", "type": "single", "question": "报销单必须在多久内提交？", "expected_docs": ["报销、差旅与采购流程"], "must_contain": ["60 天"]}
+{"id": "q04", "type": "single", "question": "一线城市住宿标准是多少？", "expected_docs": ["报销、差旅与采购流程"], "must_contain": ["450"]}
+{"id": "q05", "type": "single", "question": "出差补贴一天多少钱？", "expected_docs": ["报销、差旅与采购流程"], "must_contain": ["120"]}
+{"id": "q06", "type": "single", "question": "报销一般什么时候打款？", "expected_docs": ["报销、差旅与采购流程"], "must_contain": ["15 日"]}
+{"id": "q07", "type": "single", "question": "年假最多可以结转几天？", "expected_docs": ["考勤、请假与远程办公"], "must_contain": ["5 天"]}
+{"id": "q08", "type": "single", "question": "请假超过 2 天需要提前做什么？", "expected_docs": ["考勤、请假与远程办公"], "must_contain": ["备份人"]}
+{"id": "q09", "type": "single", "question": "每周最多可以远程办公几天？", "expected_docs": ["考勤、请假与远程办公"], "must_contain": ["2 天"]}
+{"id": "q10", "type": "single", "question": "工作日加班到几点有餐补？", "expected_docs": ["考勤、请假与远程办公"], "must_contain": ["20:30"]}
+{"id": "q11", "type": "single", "question": "迟到几次以上会开始扣钱？", "expected_docs": ["考勤、请假与远程办公"], "must_contain": ["3 次"]}
+{"id": "q12", "type": "single", "question": "常规发布窗口安排在什么时候？", "expected_docs": ["发布上线与故障响应 SOP"], "must_contain": ["周二"]}
+{"id": "q13", "type": "single", "question": "P0 故障要求多久响应？", "expected_docs": ["发布上线与故障响应 SOP"], "must_contain": ["5 分钟"]}
+{"id": "q14", "type": "single", "question": "回滚需要谁审批？", "expected_docs": ["发布上线与故障响应 SOP"], "must_contain": ["不需要审批"]}
+{"id": "q15", "type": "single", "question": "单个 MR 的改动行数上限是多少？", "expected_docs": ["研发流程与代码规范"], "must_contain": ["400 行"]}
+{"id": "q16", "type": "single", "question": "提交信息的格式规范是什么？", "expected_docs": ["研发流程与代码规范"], "must_contain": ["feat"]}
+{"id": "q17", "type": "single", "question": "特性分支最多可以存活多久？", "expected_docs": ["研发流程与代码规范"], "must_contain": ["5 个工作日"]}
+{"id": "q18", "type": "single", "question": "KaiRAG 默认的 chunk_size 是多少？", "expected_docs": ["KaiRAG 自研框架使用手册"], "must_contain": ["512"]}
+{"id": "q19", "type": "single", "question": "KaiRAG 要求生成结果用什么引用格式？", "expected_docs": ["KaiRAG 自研框架使用手册"], "must_contain": ["[[1]]"]}
+{"id": "q20", "type": "single", "question": "报 Collection dimension mismatch 该怎么处理？", "expected_docs": ["KaiRAG 自研框架使用手册"], "must_contain": ["reindex"]}
+{"id": "q21", "type": "single", "question": "Skill 的 description 必须写清楚哪三件事？", "expected_docs": ["Skill 开发与上架规范"], "must_contain": ["触发场景"]}
+{"id": "q22", "type": "single", "question": "Skill 上架最常见的驳回原因是什么？", "expected_docs": ["Skill 开发与上架规范"], "must_contain": ["description"]}
+{"id": "q23", "type": "single", "question": "哪一级数据禁止上传到外部大模型？", "expected_docs": ["账号、权限与数据安全"], "must_contain": ["L3"]}
+{"id": "q24", "type": "single", "question": "敏感权限默认有效期是多久？", "expected_docs": ["账号、权限与数据安全"], "must_contain": ["30 天"]}
+{"id": "q25", "type": "single", "question": "密钥不小心提交到仓库后应该怎么处理？", "expected_docs": ["账号、权限与数据安全"], "must_contain": ["轮换"]}
+{"id": "q26", "type": "single", "question": "公司一共有几条价值观？", "expected_docs": ["公司文化与价值观"], "must_contain": ["四"]}
+{"id": "q27", "type": "single", "question": "账号没有权限应该找谁审批？", "expected_docs": ["组织架构与找人指南", "账号、权限与数据安全"], "must_contain": ["主管"]}
+{"id": "q28", "type": "single", "question": "每年学习预算可以报销多少？", "expected_docs": ["导师制与学习资源"], "must_contain": ["3000"]}
+{"id": "q29", "type": "multi", "question": "报销的提交时限和一线城市住宿标准分别是多少？", "expected_docs": ["报销、差旅与采购流程"], "must_contain": ["60 天", "450"]}
+{"id": "q30", "type": "multi", "question": "出差补贴和打车报销的上限分别是多少？", "expected_docs": ["报销、差旅与采购流程"], "must_contain": ["120", "80"]}
+{"id": "q31", "type": "followup", "question": "那其他城市呢？", "expected_docs": ["报销、差旅与采购流程"], "must_contain": ["350"], "history": [{"role": "user", "content": "一线城市住宿标准是多少？"}, {"role": "assistant", "content": "一线城市住宿标准：P1—P4 450 元/晚，P5—P6 600 元/晚，P7 及以上 800 元/晚。"}]}
+{"id": "q32", "type": "followup", "question": "这个需要提前几天申请？", "expected_docs": ["考勤、请假与远程办公"], "must_contain": ["一天"], "history": [{"role": "user", "content": "远程办公每周最多几天？"}, {"role": "assistant", "content": "每周最多 2 天远程，需提前在 OA 申请，直属主管审批。"}]}
+{"id": "q33", "type": "refusal", "question": "公司食堂中午几点开饭？", "expected_docs": [], "must_contain": []}
+{"id": "q34", "type": "refusal", "question": "我们公司的股票代码是多少？", "expected_docs": [], "must_contain": []}
+{"id": "q35", "type": "refusal", "question": "明年公司会不会搬新办公楼？", "expected_docs": [], "must_contain": []}

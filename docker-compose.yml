@@ -1,0 +1,31 @@
+services:
+  rag:
+    build: .
+    image: dayone-rag:1.0.0
+    container_name: dayone
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # 容器内路径固定，避免宿主机相对路径差异
+      CHROMA_DIR: /app/data/chroma
+      KB_LOCAL_PATH: /app/data/corpus
+      INGEST_STATE_FILE: /app/data/state/ingest_state.json
+    volumes:
+      # 向量库与入库状态持久化，重启不用重跑 embedding
+      - rag-data:/app/data/chroma
+      - rag-state:/app/data/state
+      # 想让容器读宿主机目录的知识库，挂这里并改 KB_ADAPTER_CONFIG
+      # - ./data/corpus:/app/data/corpus:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  rag-data:
+  rag-state:

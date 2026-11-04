@@ -1,0 +1,11 @@
+__pycache__
+*.pyc
+.venv
+.venv/
+.env
+data/chroma
+data/eval
+.git
+.pytest_cache
+docs
+README.md

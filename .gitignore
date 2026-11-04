@@ -1,0 +1,28 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---------- 环境与密钥（绝对不能提交） ----------
+.env
+.env.*
+!.env.example
+
+# ---------- 运行产物 ----------
+data/chroma/
+data/ingest_state.json
+data/feedback.jsonl
+data/eval/
+logs/
+*.log
+
+# ---------- 系统 ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

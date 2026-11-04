@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>知新 DayOne · 入职手册知识库助手</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">知</div>
+      <div class="brand-text">
+        <h1>知新 DayOne</h1>
+        <p>新人知新，问必有据 · 每条答案都能查来源</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="status" id="status-badge" title="服务状态">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">连接中…</span>
+      </div>
+      <button class="ghost-btn" id="btn-settings" title="设置">设置</button>
+      <button class="ghost-btn" id="btn-new" title="新会话">新会话</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chat-panel">
+      <div class="messages" id="messages">
+        <div class="welcome" id="welcome">
+          <h2>你好，我是入职手册助手 👋</h2>
+          <p>我只回答内部知识库里有的内容，每条结论都会标注来源，你可以点编号核对原文。</p>
+          <div class="suggestions" id="suggestions">
+            <button data-q="入职第一天要配置哪些账号？">入职第一天要配置哪些账号？</button>
+            <button data-q="报销单必须在多久内提交？">报销单必须在多久内提交？</button>
+            <button data-q="每周最多可以远程办公几天？">每周最多可以远程办公几天？</button>
+            <button data-q="KaiRAG 默认的 chunk_size 是多少？">KaiRAG 默认的 chunk_size 是多少？</button>
+            <button data-q="常规发布窗口安排在什么时候？">常规发布窗口安排在什么时候？</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="composer-inner">
+          <textarea id="input" rows="1" placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button id="send" class="send-btn" aria-label="发送">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 12l16-8-6 16-2-6-8-2z" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+        <div class="composer-hint">
+          <span id="session-hint">新会话</span>
+          <button class="link-btn" id="btn-feedback" hidden>这个问题没答案？</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="sources-panel">
+      <div class="panel-head">
+        <h3>引用来源</h3>
+        <span class="pill" id="source-count">0</span>
+      </div>
+      <div class="meta-row" id="retrieval-meta"></div>
+      <div class="sources" id="sources">
+        <div class="empty">
+          <p>回答生成后会在这里列出参考的文档片段。</p>
+          <p class="tiny">点答案里的 <span class="chip-demo">1</span> 可以跳到对应片段并高亮关键句。</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <dialog id="settings-dialog">
+    <form method="dialog" class="dialog-body">
+      <h3>设置</h3>
+      <label>
+        <span>API Key（服务开启鉴权时必填）</span>
+        <input id="set-apikey" type="password" placeholder="留空表示服务未开启鉴权" />
+      </label>
+      <label>
+        <span>召回条数 top_k</span>
+        <input id="set-topk" type="number" min="1" max="20" value="5" />
+      </label>
+      <p class="tiny">设置只保存在本机浏览器，不会上传。</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost-btn">取消</button>
+        <button value="ok" class="primary-btn">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
