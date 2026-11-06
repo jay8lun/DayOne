@@ -95,17 +95,20 @@ def build_rag_graph(retriever: HybridRetriever, llm: BaseLLM):
 
     async def grade(state: RagState) -> dict[str, Any]:
         result = state["result"]
-        sufficient = bool(result.chunks) and (
-            result.confidence >= settings.min_confidence
-            and (
-                result.bm25_top >= settings.min_bm25_anchor
-                or result.evidence >= settings.min_evidence
-            )
-        )
+        anchor_ok = result.bm25_top >= settings.min_bm25_anchor
+        evidence_ok = result.evidence >= settings.min_evidence
+        # 改写之后必须过更严的闸：只要「强词法命中」或「单块覆盖」其一即可 ——
+        # 这条规则在 round=0 时是合理的（词法命中就能说明在讲同一件事），
+        # 但改写会**引入用户没问过的词**（问"食堂几点开饭"被改写成"供餐时间 就餐时段"），
+        # BM25 分数被抬起来，等于自己给自己发通行证。所以改写后要求两个条件同时满足。
+        strict = state.get("round", 0) > 0
+        passed = (anchor_ok and evidence_ok) if strict else (anchor_ok or evidence_ok)
+        sufficient = bool(result.chunks) and result.confidence >= settings.min_confidence and passed
         reason = (
             f"conf={result.confidence:.2f}(阈值{settings.min_confidence}), "
             f"evidence={result.evidence:.2f}(阈值{settings.min_evidence}), "
             f"bm25={result.bm25_top:.1f}(阈值{settings.min_bm25_anchor})"
+            + ("，改写后需双条件同时满足" if strict else "")
         )
         return {
             "sufficient": sufficient,

@@ -101,6 +101,20 @@ class Settings(BaseSettings):
     max_history_turns: int = 6
     session_ttl_minutes: int = 120
 
+    # ---------- 记忆（长期，跨会话） ----------
+    memory_db_path: str = "data/memory.db"
+    # 写入闸门：LLM 抽取的候选低于该置信度只进 pending，不覆盖已有事实
+    memory_confidence_min: float = 0.7
+    # 遗忘曲线：半衰期越长越"念旧"；阈值越低越舍不得忘
+    # 取 90 天是权衡结果：半年不提，权重还剩 0.25 会被保留；
+    # 一年多不提才降到 0.05 以下被冷归档。30 天太激进（三个月不聊就把用户住址忘了）。
+    memory_half_life_days: float = 90.0
+    memory_decay_threshold: float = 0.15
+    # 冷归档放置多久后立墓碑（墓碑可审计，不物理删除）
+    memory_tombstone_days: float = 90.0
+    # 回答时是否注入「已知用户信息 + 当前流程状态」
+    memory_inject_context: bool = True
+
     # ---------- 存储 ----------
     chroma_dir: str = "data/chroma"
     collection_prefix: str = "onboarding_kb"

@@ -16,13 +16,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .adapters.registry import available_adapters, build_adapters, load_plugins
-from .api import routes_chat, routes_eval, routes_kb
+from .api import routes_chat, routes_eval, routes_kb, routes_memory
 from .config import BASE_DIR, settings
 from .core.errors import AppError
 from .core.logging import get_logger, setup_logging
 from .ingest.embedder import get_embedder
 from .ingest.pipeline import IngestionPipeline
 from .ingest.store import get_store
+from .memory import get_memory
 from .rag.llm import get_llm
 from .rag.service import get_service
 
@@ -73,6 +74,21 @@ async def lifespan(app: FastAPI):
         log.error("索引预热失败: %s", exc)
 
     BOOT_INFO["llm"] = f"{get_llm().provider}/{get_llm().model}"
+
+    # 4) 记忆库（SQLite，本地文件；失败不阻塞启动，只是记忆功能不可用）
+    try:
+        memory = get_memory()
+        await memory.store.init()
+        mstats = await memory.store.stats()
+        BOOT_INFO["memory"] = mstats
+        log.info(
+            "记忆库就绪 | 事实 %d 条 / 待确认 %d / 冷归档 %d | 流程 %d",
+            mstats.get("facts_active", 0), mstats.get("facts_pending", 0),
+            mstats.get("facts_cold", 0), mstats.get("work_items", 0),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error("记忆库初始化失败（服务继续启动）: %s", exc)
+
     log.info("服务就绪 | LLM=%s", BOOT_INFO["llm"])
     yield
 
@@ -122,6 +138,7 @@ async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
 app.include_router(routes_chat.router)
 app.include_router(routes_kb.router)
 app.include_router(routes_eval.router)
+app.include_router(routes_memory.router)
 
 
 @app.get("/api/health", tags=["ops"], summary="健康检查（含当前模型与知识库状态）")

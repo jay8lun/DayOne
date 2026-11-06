@@ -16,6 +16,9 @@ venv/
 # ---------- 运行产物 ----------
 data/chroma/
 data/ingest_state.json
+data/memory.db
+data/memory*.db*
+data/memory_demo.db
 data/feedback.jsonl
 data/eval/
 logs/
