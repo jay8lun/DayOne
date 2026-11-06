@@ -56,6 +56,9 @@ class ChatResponse(BaseModel):
     requires_confirmation: bool = Field(False, description="写操作：已生成待确认操作，尚未执行")
     pending_action: dict[str, Any] = Field(default_factory=dict,
                                           description="待确认操作（action_id / summary / expires_at）")
+    recipe: str = Field("", description="多步编排命中的剧本 id（空表示未走编排）")
+    plan: list[dict[str, Any]] = Field(default_factory=list,
+                                       description="编排计划：每步做了什么、成没成")
 
 
 class ResetRequest(BaseModel):

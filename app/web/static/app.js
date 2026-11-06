@@ -167,10 +167,11 @@ function renderSources(sources, meta) {
   const metaEl = $('retrieval-meta');
   metaEl.innerHTML = '';
   if (meta) {
-    const chips = [
-      `置信度 ${(meta.confidence ?? 0).toFixed(2)}`,
-      `覆盖度 ${(meta.coverage ?? 0).toFixed(2)}`,
-    ];
+    // 编排链路没有"检索置信度"这回事（它可能是查档案/系统），别摆两个 0.00 误导人
+    const chips = meta.answer_source === 'orchestrated'
+      ? []
+      : [`置信度 ${(meta.confidence ?? 0).toFixed(2)}`,
+         `覆盖度 ${(meta.coverage ?? 0).toFixed(2)}`];
     if (meta.standalone_query) chips.push(`检索用问题：${meta.standalone_query}`);
     metaEl.innerHTML = chips.map((c) => `<span>${esc(c)}</span>`).join('');
   }
@@ -181,7 +182,9 @@ function renderSources(sources, meta) {
       ? '这次由系统查询作答（工单 / 人员 / 流程），没有检索文档。'
       : src === 'memory'
         ? '这次由你的入职档案作答，没有检索文档。'
-        : '这次没有召回到相关文档。';
+        : src === 'orchestrated'
+          ? '这次任务只用到档案与系统数据，没有引用文档。'
+          : '这次没有召回到相关文档。';
     metaEl.innerHTML = '';
     sourcesEl.innerHTML = `<div class="empty"><p>${esc(why)}</p></div>`;
     return;
@@ -363,9 +366,40 @@ function toolLabel(name) {
   return TOOL_LABELS[name] || name || '';
 }
 
+/* 多步编排：把「它走了哪几步」摊开给用户看，而不是只给一个答案 */
+const STEP_LABELS = { memory: '档案', doc: '文档', tool: '系统', propose: '申请' };
+
+function renderPlan(shell, p) {
+  const plan = (p && p.plan) || [];
+  if (p.answer_source !== 'orchestrated' || !plan.length) return;
+  const failed = plan.filter((x) => !x.ok).length;
+  const steps = plan
+    .map((x) => `<span class="plan-step ${x.ok ? '' : 'bad'}">
+        <b>${esc(STEP_LABELS[x.kind] || x.kind)}</b>${esc(x.step)}
+      </span>`)
+    .join('<span class="plan-arrow">→</span>');
+  const box = document.createElement('div');
+  box.className = 'plan-box';
+  box.innerHTML = `
+    <div class="plan-head">执行了 ${plan.length} 步${failed ? `（${failed} 步失败）` : ''}</div>
+    <div class="plan-steps">${steps}</div>`;
+  shell.bubble.appendChild(box);
+}
+
 function renderFootnote(shell, p) {
   if (!p) return;
   // 工具/档案作答没有引用体系，硬塞「引用 0/0、有据率 0.00」只会让人误解为质量差
+  if (p.answer_source === 'orchestrated') {
+    const plan = p.plan || [];
+    const failed = plan.filter((x) => !x.ok).length;
+    shell.footnote.innerHTML =
+      `<span>编排 <b>${plan.length}</b> 步${failed ? ` · <b>${failed}</b> 步失败` : ' · 全部成功'}</span>` +
+      `<span>耗时 <b>${p.latency_ms || 0}</b> ms</span>` +
+      (p.requires_confirmation ? '<span>尚未提交，等待确认</span>' : '');
+    shell.footnote.hidden = false;
+    return;
+  }
+
   if (p.answer_source === 'tool' || p.answer_source === 'memory') {
     const toolName = (p.tool && p.tool.name) || '';
     const label = p.answer_source === 'memory'
@@ -427,6 +461,7 @@ async function send(question) {
       });
       renderFootnote(shell, payload);
       $('btn-feedback').hidden = !payload.refused;
+      renderPlan(shell, payload);
       if (payload.requires_confirmation && payload.pending_action) {
         renderConfirmCard(shell, payload.pending_action);
       }

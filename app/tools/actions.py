@@ -114,6 +114,11 @@ class ActionService:
             enum = meta.get("enum")
             if enum and key in clean and clean[key] not in enum:
                 raise ActionError(f"参数 {key} 只能是 {'/'.join(map(str, enum))}", "bad_enum")
+
+        if spec.validate is not None:
+            message = spec.validate(clean)
+            if message:
+                raise ActionError(message, "invalid_args")
         return clean
 
     def _summary(self, spec: ToolSpec, args: dict[str, Any]) -> str:

@@ -103,6 +103,11 @@ async def submit_permission_request(
     reason = (reason or "").strip()
     if not system or not reason:
         return {"error": "缺少系统名或申请理由，无法提交"}
+    # 模型很爱把「清单/所列/相关系统」当系统名填进来（实测出现过
+    # 「开发环境（第一周清单所列系统）」）。这种名字提交上去，IT 只能打回。
+    vague = [w for w in ("清单", "所列", "相关系统", "等系统", "所有系统") if w in system]
+    if vague:
+        return {"error": f"系统名不够具体（{'、'.join(vague)}），请说明具体要开通哪个系统"}
 
     store = await get_action_store()
     ticket = await store.create_ticket(
@@ -141,6 +146,17 @@ async def get_my_tickets(owner_id: str = "") -> dict[str, Any]:
             for r in rows[:10]
         ],
     }
+
+
+def _validate_permission(args: dict[str, Any]) -> str:
+    """业务校验：系统名必须是具体的。返回空串表示通过。"""
+    system = str(args.get("system", ""))
+    vague = [w for w in ("清单", "所列", "相关系统", "等系统", "所有系统") if w in system]
+    if vague:
+        return f"系统名不够具体（{'、'.join(vague)}），请说明具体要开通哪个系统"
+    if len(system) < 2:
+        return "系统名太短，请说明具体系统"
+    return ""
 
 
 def _describe_permission(args: dict[str, Any]) -> str:
@@ -213,6 +229,7 @@ def register_builtin_tools() -> None:
             needs_owner=True,
             timeout_s=8.0,
             describe=_describe_permission,
+            validate=_validate_permission,
         )
     )
     registry.register(

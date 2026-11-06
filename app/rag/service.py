@@ -126,6 +126,12 @@ class RagService:
         t0 = time.perf_counter()
         session_id = session_id or self.sessions.new_id()
 
+        # 多步任务先走编排：它要串「记忆 → 文档 → 工具」，比单层路由更具体。
+        # 命中不了会返回 None，下面照旧按 记忆 → 工具 → 文档 走。
+        orchestrated = await self._orchestrated_answer(session_id, question, owner_id, t0)
+        if orchestrated:
+            return orchestrated
+
         # 先判「是不是在问我本人」。必须在检索**之前**判：
         # 一旦走了改写+检索，历史上下文会把「我的进度」改写成制度问题，档案就被绕过去了。
         early = await self._memory_answer(session_id, question, owner_id, t0)
@@ -175,6 +181,17 @@ class RagService:
         yield {"type": "start", "session_id": session_id, "question": question}
 
         try:
+            orchestrated = await self._orchestrated_answer(session_id, question, owner_id, t0)
+            if orchestrated:
+                plan = orchestrated.get("plan") or []
+                yield {"type": "status", "stage": "orchestrating",
+                       "message": f"正在执行 {len(plan)} 步任务…"}
+                answer = orchestrated["answer"]
+                for i in range(0, len(answer), 12):
+                    yield {"type": "delta", "text": answer[i : i + 12]}
+                yield {"type": "done", **orchestrated}
+                return
+
             early_memory = await self._memory_blocks(owner_id)
             if early_memory and memory_covers(question, early_memory["text"]):
                 yield {"type": "status", "stage": "memory", "message": "正在查你的入职档案…"}
@@ -251,6 +268,43 @@ class RagService:
         except Exception as exc:  # noqa: BLE001
             log.exception("问答出现未预期错误")
             yield {"type": "error", "message": f"服务内部错误：{exc}"}
+
+    async def _orchestrated_answer(
+        self, session_id: str, question: str, owner_id: str | None, t0: float
+    ) -> dict[str, Any] | None:
+        """多步编排：命中剧本时，把 记忆 / 文档 / 工具 串起来做一件事。
+
+        返回里带 `plan`（每步做了什么、成没成），前端与接口都能看到，
+        这样「它为什么查了这个」不需要靠猜。
+        """
+        from ..tools.orchestrator import get_orchestrator
+
+        result = await get_orchestrator().run(question, owner_id, self.llm)
+        if not result:
+            return None
+
+        answer = result.get("answer") or ""
+        chunks = result.get("chunks") or []
+        plan = result.get("plan") or []
+        payload = self._payload_from_memory(
+            session_id, question, answer, t0,
+            source="orchestrated",
+            trace=[f"orchestrate: {result.get('recipe')} → {len(plan)} 步"]
+            + [f"  {p['kind']}: {p['step']} ({'ok' if p['ok'] else 'fail'})" for p in plan],
+            retrieval={"mode": "orchestrated", "recipe": result.get("recipe"), "plan": plan},
+        )
+        payload["plan"] = plan
+        payload["recipe"] = result.get("recipe")
+        payload["tool"] = {"name": result.get("recipe"), "args": {}, "ok": True}
+
+        if chunks and "[[" in answer:
+            payload.update(verify_and_attach(answer, chunks))
+        if result.get("requires_confirmation"):
+            payload["requires_confirmation"] = True
+            payload["pending_action"] = result.get("pending_action") or {}
+
+        self._remember(session_id, question, payload["answer_plain"])
+        return payload
 
     async def _memory_answer(
         self, session_id: str, question: str, owner_id: str | None, t0: float

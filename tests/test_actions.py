@@ -210,3 +210,20 @@ def test_api_propose_confirm_roundtrip(tmp_path):
     finally:
         reset_actions(None)
         store.close()
+
+
+def test_vague_system_name_rejected_at_propose(svc: ActionService):
+    """「开发环境（第一周清单所列系统）」这种名字要在提议阶段就拒。
+
+    实测出现过：模型把「清单」当系统名填进来，用户点了确认才发现提交不了。
+    与其让用户白点一次，不如在生成待确认操作时就说清楚缺什么。
+    """
+    async def case():
+        with pytest.raises(ActionError) as exc:
+            await svc.propose("u1", "submit_permission_request",
+                              {"system": "开发环境（第一周清单所列系统）", "reason": "入职配置"})
+        assert exc.value.code == "invalid_args"
+        assert "具体" in exc.value.message
+        assert await svc.store.list_actions("u1") == []
+
+    _run(case())

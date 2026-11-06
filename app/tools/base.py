@@ -31,6 +31,10 @@ class ToolSpec:
     needs_owner: bool = False
     # 写操作的「人话摘要」：确认框里给用户看的就是这一句，必须能看懂要干什么。
     describe: Callable[[dict[str, Any]], str] | None = None
+    # 业务级校验：返回错误文案表示不通过。schema 只能校验结构，
+    # 「系统名是不是具体」这种事只有工具自己知道——而且要在**提议阶段**就拒，
+    # 不能等用户点了确认才说参数不行。
+    validate: Callable[[dict[str, Any]], str] | None = None
 
     def schema(self) -> dict[str, Any]:
         """OpenAI function calling 的 schema 形状。"""

@@ -548,6 +548,56 @@ async def p_write(ctx: ProbeContext) -> None:
         store.close()
 
 
+class _ProbeLLM:
+    """探针用的哑模型：编排链路目前不调它，但接口要求有。"""
+
+    provider = "probe"
+    model = "probe"
+
+    async def complete(self, *args: Any, **kwargs: Any) -> str:  # pragma: no cover
+        return ""
+
+
+@probe(
+    "orchestration", "multi_step_plan",
+    "多步任务串得上：档案里的导师名真的被拿去查了目录，而不是各查各的",
+    "单步工具谁都会调，难的是「上一步的输出变成下一步的输入」。"
+    "这条探针验证：① 两步都执行且 plan 有记录；② 第二步的入参来自档案而非模型编造；"
+    "③ 档案里没有导师时不去查目录（不乱调）；④ 问规则的句子不被编排抢走。",
+)
+async def p_multi_step(ctx: ProbeContext) -> None:
+    from ..tools.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator(memory=ctx.service)
+    with ctx.at("2026-11-06T10:00:00"):
+        await ctx.remember("mentor", "王琳")
+        result = await orchestrator.run("我导师是谁？他分机多少", ctx.owner, _ProbeLLM())
+
+    assert result is not None, "编排没有命中导师剧本"
+    plan = result.get("plan") or []
+    ctx.check_eq("剧本命中", "mentor_contact", result.get("recipe"))
+    ctx.check_eq("两步都执行了", ["memory", "tool"], [p["kind"] for p in plan])
+    ctx.check("两步都成功", all(p["ok"] for p in plan), f"plan={plan}")
+    ctx.check("答案是目录里的分机", "8007" in result["answer"], result["answer"][:80])
+    ctx.check(
+        "第二步的入参来自档案（王琳）",
+        "王琳" in plan[1]["detail"],
+        f"工具步 detail={plan[1]['detail']}",
+    )
+
+    # 档案里没有导师：应该老实说，并且不去调目录工具
+    with ctx.at("2026-11-06T10:05:00"):
+        empty = await orchestrator.run("我导师是谁", f"{ctx.owner}-no-mentor", _ProbeLLM())
+    empty_plan = (empty or {}).get("plan") or []
+    ctx.check("没有导师时不调工具", len(empty_plan) == 1, f"plan={empty_plan}")
+    ctx.check("没有导师时如实说", "没有记录导师" in (empty or {}).get("answer", ""),
+              (empty or {}).get("answer", "")[:80])
+
+    # 问规则的句子不该被编排抢走（这类问题应交给文档检索）
+    hijack = await Orchestrator(memory=ctx.service).run("申请权限需要什么条件", ctx.owner, _ProbeLLM())
+    ctx.check("规则问题不被编排截胡", hijack is None, f"实际={hijack}")
+
+
 # ============================ 探针（上下文：压缩不能吃掉证据） ============================
 
 
@@ -727,6 +777,7 @@ CATEGORY_LABEL = {
     "forgetting": "遗忘",
     "work": "工作记忆",
     "write": "写操作",
+    "orchestration": "编排",
     "audit": "可解释",
     "context": "上下文",
 }
