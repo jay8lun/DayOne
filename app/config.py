@@ -115,6 +115,19 @@ class Settings(BaseSettings):
     # 回答时是否注入「已知用户信息 + 当前流程状态」
     memory_inject_context: bool = True
 
+    # ---------- 上下文预算（P2） ----------
+    # 关掉就退回「全塞进去」的老行为，方便 A/B
+    enable_context_budget: bool = True
+    # 输入侧预算（不含模型输出）。按 8k 窗口估的保守值，换大窗口模型可调高
+    context_max_tokens: int = 3000
+    # 给输出预留，不允许靠挤占它来塞内容
+    context_output_reserve: int = 900
+    context_profile_tokens: int = 220
+    context_work_tokens: int = 160
+    # 最近 N 轮原文不压缩（压了会破坏指代消解）
+    context_recent_turns: int = 2
+    context_summary_tokens: int = 320
+
     # ---------- 存储 ----------
     chroma_dir: str = "data/chroma"
     collection_prefix: str = "onboarding_kb"

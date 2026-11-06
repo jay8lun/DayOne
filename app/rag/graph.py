@@ -120,9 +120,11 @@ def build_rag_graph(retriever: HybridRetriever, llm: BaseLLM):
         rnd = state.get("round", 0) + 1
         prompt = REWRITE_PROMPT.format(question=state["question"])
         try:
+            # 温度必须是 0：改写结果直接决定「改写后双条件闸」的判定，
+            # 0.3 会让同一个问题这次答得出来、下次被拒答（实测过，抖动很明显）。
             new_query = _first_line(
                 await llm.complete(
-                    [{"role": "user", "content": prompt}], temperature=0.3, max_tokens=120
+                    [{"role": "user", "content": prompt}], temperature=0.0, max_tokens=120
                 )
             )
         except Exception as exc:  # noqa: BLE001

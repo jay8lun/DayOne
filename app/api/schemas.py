@@ -11,6 +11,10 @@ class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=1000, description="用户问题")
     session_id: str | None = Field(None, description="会话 id，不传则新建；多轮追问必须复用")
     top_k: int | None = Field(None, ge=1, le=20)
+    owner_id: str | None = Field(
+        None, max_length=64,
+        description="员工 id。传了才会注入长期记忆与流程状态（画像/进度），不传就是无状态问答",
+    )
 
 
 class SourceItem(BaseModel):
@@ -46,6 +50,8 @@ class ChatResponse(BaseModel):
     trace: list[str] = []
     llm: dict[str, str] = {}
     latency_ms: int = 0
+    context: dict[str, Any] = Field(default_factory=dict, description="上下文预算去向（可观测）")
+    answer_source: str = Field("knowledge_base", description="答案来源：knowledge_base | memory")
 
 
 class ResetRequest(BaseModel):

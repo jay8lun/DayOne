@@ -22,7 +22,7 @@ log = get_logger(__name__)
 @router.post("/chat", response_model=ChatResponse, summary="一次性问答（含来源与引用）")
 async def chat(req: ChatRequest) -> ChatResponse:
     service = get_service()
-    payload = await service.ask(req.question, req.session_id)
+    payload = await service.ask(req.question, req.session_id, req.owner_id)
     return ChatResponse(**payload)
 
 
@@ -32,7 +32,7 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 
     async def event_source():
         try:
-            async for event in service.astream(req.question, req.session_id):
+            async for event in service.astream(req.question, req.session_id, req.owner_id):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001
             log.exception("SSE 流中断")

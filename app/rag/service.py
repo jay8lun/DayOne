@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -15,14 +16,44 @@ from typing import Any
 from ..config import settings
 from ..core.errors import LLMError
 from ..core.logging import get_logger
+from ..memory import get_memory
 from .citations import build_sources, verify_and_attach
 from .graph import build_rag_graph
-from .llm import BaseLLM, get_llm
-from .prompts import REFUSAL_TEXT, build_answer_messages
+from .llm import BaseLLM, content_terms, get_llm
+from .prompts import MEMORY_SYSTEM_PROMPT, REFUSAL_TEXT, build_answer_messages
 from .retriever import HybridRetriever, RetrievalResult
 from .sessions import SessionStore, session_store
 
 log = get_logger(__name__)
+
+
+_SELF_HINTS = ("我", "本人", "自己", "咱们")
+_STATE_HINTS = ("哪一步", "第几步", "几步", "进度", "到哪", "走到", "还要", "还差",
+                "补", "交了", "提交", "状态", "材料", "到哪儿")
+# 出现这些词说明用户在问「规则」而不是「我的状态」，必须走文档链路
+_RULE_HINTS = ("标准", "多少", "几天", "几号", "怎么", "如何", "规定", "制度", "政策", "能不能")
+
+
+def memory_covers(question: str, memory_text: str) -> bool:
+    """判断这个问题该不该用「个人档案」来答。
+
+    这是**启发式路由**，不是语义理解：同时满足三条才放行——
+    ① 提到自己（我/本人）；② 问的是当前状态（进度/哪一步/还要补什么）；
+    ③ 档案里确实有状态信息。出现「标准/多少/怎么」这类词说明在问规则，一律交给文档链路。
+
+    为什么不用模型判断：这一层要的是**稳定可测**。等 P3 加了工具与意图路由节点，
+    这里会被「模型判意图 + 工具白名单」取代，届时删掉即可。
+    """
+    text = (memory_text or "").strip()
+    if not text:
+        return False
+    if not any(h in question for h in _SELF_HINTS):
+        return False
+    if any(h in question for h in _RULE_HINTS):
+        return False
+    if not any(h in question for h in _STATE_HINTS):
+        return False
+    return any(h in text for h in _STATE_HINTS)
 
 
 class RagService:
@@ -76,14 +107,25 @@ class RagService:
             "coverage": prep["coverage"],
             "retrieval": prep["retrieval"],
             "trace": prep["trace"],
+            "context": {},
+            "answer_source": "knowledge_base",
             "llm": {"provider": self.llm.provider, "model": self.llm.model},
             "latency_ms": 0,
         }
 
     # ---------- 一次性问答 ----------
-    async def ask(self, question: str, session_id: str | None = None) -> dict[str, Any]:
+    async def ask(
+        self, question: str, session_id: str | None = None, owner_id: str | None = None
+    ) -> dict[str, Any]:
         t0 = time.perf_counter()
         session_id = session_id or self.sessions.new_id()
+
+        # 先判「是不是在问我本人」。必须在检索**之前**判：
+        # 一旦走了改写+检索，历史上下文会把「我的进度」改写成制度问题，档案就被绕过去了。
+        early = await self._memory_answer(session_id, question, owner_id, t0)
+        if early:
+            return early
+
         prep = await self.prepare(question, session_id)
 
         if not prep["sufficient"]:
@@ -100,8 +142,8 @@ class RagService:
             self._remember(session_id, question, REFUSAL_TEXT)
             return payload
 
-        messages = build_answer_messages(
-            prep["standalone_query"], prep["chunks"], self.sessions.history(session_id)
+        messages, ctx_info = await self._compose(
+            prep["standalone_query"], prep["chunks"], session_id, owner_id
         )
         raw = await self.llm.complete(messages)
         verified = verify_and_attach(raw, prep["chunks"])
@@ -109,17 +151,31 @@ class RagService:
         payload = self._base_payload(session_id, question, prep)
         payload.update(verified)
         payload["refused"] = False
+        payload["context"] = ctx_info
         payload["latency_ms"] = int((time.perf_counter() - t0) * 1000)
         self._remember(session_id, question, payload["answer_plain"])
         return payload
 
     # ---------- 流式问答 ----------
-    async def astream(self, question: str, session_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
+    async def astream(
+        self, question: str, session_id: str | None = None, owner_id: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
         t0 = time.perf_counter()
         session_id = session_id or self.sessions.new_id()
         yield {"type": "start", "session_id": session_id, "question": question}
 
         try:
+            early_memory = await self._memory_blocks(owner_id)
+            if early_memory and memory_covers(question, early_memory["text"]):
+                yield {"type": "status", "stage": "memory", "message": "正在查你的入职档案…"}
+                answer = await self._answer_from_memory(question, early_memory)
+                for i in range(0, len(answer), 12):
+                    yield {"type": "delta", "text": answer[i : i + 12]}
+                payload = self._payload_from_memory(session_id, question, answer, t0)
+                self._remember(session_id, question, payload["answer_plain"])
+                yield {"type": "done", **payload}
+                return
+
             yield {"type": "status", "stage": "retrieving", "message": "正在检索知识库…"}
             prep = await self.prepare(question, session_id)
             yield {
@@ -150,8 +206,8 @@ class RagService:
                 return
 
             yield {"type": "status", "stage": "generating", "message": "正在生成回答…"}
-            messages = build_answer_messages(
-                prep["standalone_query"], prep["chunks"], self.sessions.history(session_id)
+            messages, ctx_info = await self._compose(
+                prep["standalone_query"], prep["chunks"], session_id, owner_id
             )
             parts: list[str] = []
             async for token in self.llm.stream(messages):
@@ -162,6 +218,7 @@ class RagService:
             verified = verify_and_attach(raw, prep["chunks"])
             payload = self._base_payload(session_id, question, prep)
             payload.update(verified)
+            payload["context"] = ctx_info
             payload["latency_ms"] = int((time.perf_counter() - t0) * 1000)
             self._remember(session_id, question, payload["answer_plain"])
             yield {"type": "done", **payload}
@@ -171,6 +228,103 @@ class RagService:
         except Exception as exc:  # noqa: BLE001
             log.exception("问答出现未预期错误")
             yield {"type": "error", "message": f"服务内部错误：{exc}"}
+
+    async def _memory_answer(
+        self, session_id: str, question: str, owner_id: str | None, t0: float
+    ) -> dict[str, Any] | None:
+        """个人状态类问题的直通路径：跳过检索，只依据档案作答。"""
+        memory = await self._memory_blocks(owner_id)
+        if not memory or not memory_covers(question, memory["text"]):
+            return None
+        answer = await self._answer_from_memory(question, memory)
+        payload = self._payload_from_memory(session_id, question, answer, t0)
+        self._remember(session_id, question, payload["answer_plain"])
+        return payload
+
+    def _payload_from_memory(
+        self, session_id: str, question: str, answer: str, t0: float
+    ) -> dict[str, Any]:
+        plain = re.sub(r"\[\[\d+\]\]", "", answer).strip()
+        return {
+            "session_id": session_id,
+            "question": question,
+            "standalone_query": question,
+            "refused": False,
+            "answer": answer,
+            "answer_plain": plain,
+            "sources": [],
+            "citations": [],
+            "grounding_score": 0.0,
+            "citation_precision": 0.0,
+            "confidence": 0.0,
+            "coverage": 0.0,
+            "retrieval": {"mode": "memory", "note": "个人状态问题，未检索文档"},
+            "trace": ["route: 命中个人档案，跳过知识库检索"],
+            "context": {},
+            "answer_source": "memory",
+            "llm": {"provider": self.llm.provider, "model": self.llm.model},
+            "latency_ms": int((time.perf_counter() - t0) * 1000),
+        }
+
+    async def _memory_blocks(self, owner_id: str | None) -> dict[str, str] | None:
+        """取个人档案（画像 + 流程状态）。没有 owner_id 就是纯无状态问答。"""
+        if not owner_id or not settings.memory_inject_context:
+            return None
+        try:
+            memory = get_memory()
+            profile = await memory.profile_text(owner_id)
+            work = await memory.work_summary(owner_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("读取个人档案失败（按无档案处理）: %s", exc)
+            return None
+        text = "\n".join(x for x in (profile, work) if x).strip()
+        if not text:
+            return None
+        return {"profile": profile, "work": work, "text": text}
+
+    async def _answer_from_memory(self, question: str, memory: dict[str, str]) -> str:
+        messages = [
+            {"role": "system", "content": MEMORY_SYSTEM_PROMPT},
+            {"role": "system", "content": f"【个人档案】\n{memory['text']}"},
+            {"role": "user", "content": question},
+        ]
+        try:
+            return (await self.llm.complete(messages, temperature=0.1)).strip()
+        except LLMError as exc:
+            log.warning("档案作答失败: %s", exc)
+            return "你的档案里暂时读不到这条信息，建议直接问 HR 王琳确认。"
+
+    async def _compose(
+        self,
+        question: str,
+        chunks: list,
+        session_id: str,
+        owner_id: str | None,
+    ) -> tuple[list[dict[str, str]], dict[str, Any]]:
+        """组装送进模型的 messages：预算分层 + 记忆注入。
+
+        关掉 `ENABLE_CONTEXT_BUDGET` 就退回老行为（全塞），方便做 A/B 对比。
+        """
+        history = self.sessions.history(session_id)
+        if not settings.enable_context_budget:
+            return build_answer_messages(question, chunks, history), {}
+
+        # 延迟导入：context.builder 依赖 rag.prompts/llm，放在顶层会与 rag 包形成循环导入
+        from ..context import get_builder
+
+        profile = work = ""
+        if owner_id and settings.memory_inject_context:
+            try:
+                memory = get_memory()
+                profile = await memory.profile_text(owner_id)
+                work = await memory.work_summary(owner_id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("记忆注入失败（忽略，不影响回答）: %s", exc)
+
+        ctx = await get_builder().build(
+            question, chunks, history, profile=profile, work=work
+        )
+        return ctx.messages, ctx.to_dict()
 
     def _remember(self, session_id: str, question: str, answer: str) -> None:
         self.sessions.append(session_id, "user", question)
