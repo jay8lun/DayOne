@@ -26,6 +26,11 @@ class ToolSpec:
     handler: Handler
     read_only: bool = True
     timeout_s: float = 8.0
+    # 需要服务端注入身份（如「我的流程」「我的工单」）。模型不能自己填 owner_id，
+    # 否则一句「查一下 E1234 的进度」就能替别人查。
+    needs_owner: bool = False
+    # 写操作的「人话摘要」：确认框里给用户看的就是这一句，必须能看懂要干什么。
+    describe: Callable[[dict[str, Any]], str] | None = None
 
     def schema(self) -> dict[str, Any]:
         """OpenAI function calling 的 schema 形状。"""

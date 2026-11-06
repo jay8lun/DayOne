@@ -18,6 +18,8 @@ data/chroma/
 data/ingest_state.json
 data/memory.db
 data/memory*.db*
+data/actions.db
+data/actions*.db*
 data/memory_demo.db
 data/feedback.jsonl
 data/eval/

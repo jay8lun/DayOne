@@ -53,6 +53,9 @@ class ChatResponse(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict, description="上下文预算去向（可观测）")
     answer_source: str = Field("knowledge_base", description="答案来源：knowledge_base | memory | tool")
     tool: dict[str, Any] = Field(default_factory=dict, description="本次调用到的工具（名称/参数/是否成功）")
+    requires_confirmation: bool = Field(False, description="写操作：已生成待确认操作，尚未执行")
+    pending_action: dict[str, Any] = Field(default_factory=dict,
+                                          description="待确认操作（action_id / summary / expires_at）")
 
 
 class ResetRequest(BaseModel):
@@ -125,3 +128,24 @@ class DecayRequest(BaseModel):
     threshold: float | None = Field(None, ge=0.0, le=1.0)
     tombstone_days: float | None = Field(None, ge=0, le=3650)
     dry_run: bool = Field(False, description="只算不写，用来看「会淘汰谁」")
+
+
+# ---------------- 确认式写操作 ----------------
+class ProposeRequest(BaseModel):
+    owner_id: str = Field(..., max_length=64, description="员工 id（由前端会话带入）")
+    tool: str = Field(..., max_length=60)
+    args: dict[str, Any] = Field(default_factory=dict)
+    client_key: str | None = Field(
+        None, max_length=80,
+        description="去重键：同一次意图重复提交（连点）只生成一条待确认操作",
+    )
+
+
+class ConfirmRequest(BaseModel):
+    owner_id: str = Field(..., max_length=64)
+    action_id: str = Field(..., max_length=40)
+
+
+class CancelRequest(BaseModel):
+    owner_id: str = Field(..., max_length=64)
+    action_id: str = Field(..., max_length=40)

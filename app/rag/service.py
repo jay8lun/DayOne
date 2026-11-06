@@ -32,6 +32,9 @@ _STATE_HINTS = ("哪一步", "第几步", "几步", "进度", "到哪", "走到"
                 "补", "交了", "提交", "状态", "材料", "到哪儿")
 # 出现这些词说明用户在问「规则」而不是「我的状态」，必须走文档链路
 _RULE_HINTS = ("标准", "多少", "几天", "几号", "怎么", "如何", "规定", "制度", "政策", "能不能")
+# 出现这些词说明问的是「我提的单子」，档案里没有工单，必须交给工具层。
+# 不加这条，「我提交的工单到哪一步了」会被记忆路由截胡，答成入职流程进度。
+_TOOL_OWNED_HINTS = ("工单", "申请单", "审批", "报修", "开通", "单号", "票号")
 
 
 def memory_covers(question: str, memory_text: str) -> bool:
@@ -39,7 +42,8 @@ def memory_covers(question: str, memory_text: str) -> bool:
 
     这是**启发式路由**，不是语义理解：同时满足三条才放行——
     ① 提到自己（我/本人）；② 问的是当前状态（进度/哪一步/还要补什么）；
-    ③ 档案里确实有状态信息。出现「标准/多少/怎么」这类词说明在问规则，一律交给文档链路。
+    ③ 档案里确实有状态信息。出现「标准/多少/怎么」这类词说明在问规则，一律交给文档链路；
+    出现「工单/审批/开通」这类词说明在问单据，交给工具链路（档案里没有工单）。
 
     为什么不用模型判断：这一层要的是**稳定可测**。等 P3 加了工具与意图路由节点，
     这里会被「模型判意图 + 工具白名单」取代，届时删掉即可。
@@ -50,6 +54,8 @@ def memory_covers(question: str, memory_text: str) -> bool:
     if not any(h in question for h in _SELF_HINTS):
         return False
     if any(h in question for h in _RULE_HINTS):
+        return False
+    if any(h in question for h in _TOOL_OWNED_HINTS):
         return False
     if not any(h in question for h in _STATE_HINTS):
         return False
@@ -180,25 +186,17 @@ class RagService:
                 yield {"type": "done", **payload}
                 return
 
-            from ..tools.router import answer_with_tool, route_tool
-
-            tool_info = await route_tool(self.llm, question, owner_id)
-            if tool_info:
-                yield {"type": "status", "stage": "tool",
-                       "message": f"正在查询系统（{tool_info['tool']}）…"}
-                answer = await answer_with_tool(self.llm, question, tool_info["text"])
+            tool_payload = await self._tool_payload(session_id, question, owner_id, t0)
+            if tool_payload:
+                stage = "confirm" if tool_payload.get("requires_confirmation") else "tool"
+                yield {"type": "status", "stage": stage,
+                       "message": ("正在生成待确认操作…" if stage == "confirm"
+                                   else f"正在查询系统（{(tool_payload.get('tool') or {}).get('name', '')}）…")}
+                answer = tool_payload["answer"]
                 for i in range(0, len(answer), 12):
                     yield {"type": "delta", "text": answer[i : i + 12]}
-                payload = self._payload_from_memory(
-                    session_id, question, answer, t0,
-                    source="tool",
-                    trace=[f"route: 动作型问题 → 工具 {tool_info['tool']}（ok={tool_info['ok']}）"],
-                    retrieval={"mode": "tool", "tool": tool_info["tool"], "args": tool_info["args"]},
-                )
-                payload["tool"] = {"name": tool_info["tool"], "args": tool_info["args"],
-                                   "ok": tool_info["ok"]}
-                self._remember(session_id, question, payload["answer_plain"])
-                yield {"type": "done", **payload}
+                self._remember(session_id, question, tool_payload["answer_plain"])
+                yield {"type": "done", **tool_payload}
                 return
 
             yield {"type": "status", "stage": "retrieving", "message": "正在检索知识库…"}
@@ -269,21 +267,64 @@ class RagService:
     async def _tool_answer(
         self, session_id: str, question: str, owner_id: str | None, t0: float
     ) -> dict[str, Any] | None:
-        """动作型问题的直通路径：查系统（只读工具），不走文档检索。"""
+        """动作型问题的直通路径：查系统（只读）或生成待确认操作（写）。"""
+        payload = await self._tool_payload(session_id, question, owner_id, t0)
+        if payload:
+            self._remember(session_id, question, payload["answer_plain"])
+        return payload
+
+    async def _tool_payload(
+        self, session_id: str, question: str, owner_id: str | None, t0: float
+    ) -> dict[str, Any] | None:
         from ..tools.router import answer_with_tool, route_tool
 
         info = await route_tool(self.llm, question, owner_id)
         if not info:
             return None
+
+        # ① 写操作：答案是**确定性**的（不交给模型润色）。
+        # 理由很实在：这里必须准确说出「还没提交、等你确认」，
+        # 而模型很容易顺着用户的话说成「已经帮你提交了」。
+        if info.get("requires_confirmation"):
+            answer = f"{info['text']}\n\n确认后我才会提交；也可以直接说「取消」。"
+            payload = self._payload_from_memory(
+                session_id, question, answer, t0,
+                source="tool",
+                trace=[f"route: 写操作 → 生成待确认操作 {info['action_id']}（未执行）"],
+                retrieval={"mode": "tool", "tool": info["tool"], "args": info["args"],
+                           "requires_confirmation": True},
+            )
+            payload["tool"] = {"name": info["tool"], "args": info["args"], "ok": True}
+            payload["requires_confirmation"] = True
+            payload["pending_action"] = {
+                "action_id": info["action_id"],
+                "tool": info["tool"],
+                "summary": info["summary"],
+                "expires_at": info["expires_at"],
+            }
+            return payload
+
+        # ② 工具失败（没权限、查不到、缺参数）：直接说原因，不让模型圆场
+        if not info.get("ok", True):
+            answer = info.get("text") or "系统查询没有成功，请稍后再试。"
+            payload = self._payload_from_memory(
+                session_id, question, answer, t0,
+                source="tool",
+                trace=[f"route: 工具 {info['tool']} 失败：{answer[:40]}"],
+                retrieval={"mode": "tool", "tool": info["tool"], "args": info["args"], "ok": False},
+            )
+            payload["tool"] = {"name": info["tool"], "args": info["args"], "ok": False}
+            return payload
+
+        # ③ 只读查询成功：把结果交给模型组织成人话
         answer = await answer_with_tool(self.llm, question, info["text"])
         payload = self._payload_from_memory(
             session_id, question, answer, t0,
             source="tool",
-            trace=[f"route: 动作型问题 → 工具 {info['tool']}（{info['elapsed_ms']}ms，ok={info['ok']}）"],
+            trace=[f"route: 动作型问题 → 工具 {info['tool']}（{info.get('elapsed_ms', 0)}ms，ok={info['ok']}）"],
             retrieval={"mode": "tool", "tool": info["tool"], "args": info["args"], "ok": info["ok"]},
         )
         payload["tool"] = {"name": info["tool"], "args": info["args"], "ok": info["ok"]}
-        self._remember(session_id, question, payload["answer_plain"])
         return payload
 
     def _payload_from_memory(

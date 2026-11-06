@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .adapters.registry import available_adapters, build_adapters, load_plugins
-from .api import routes_chat, routes_eval, routes_kb, routes_memory
+from .api import routes_actions, routes_chat, routes_eval, routes_kb, routes_memory
 from .config import BASE_DIR, settings
 from .core.errors import AppError
 from .core.logging import get_logger, setup_logging
@@ -89,6 +89,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         log.error("记忆库初始化失败（服务继续启动）: %s", exc)
 
+    # 5) 动作库（待确认操作 / 工单）。和记忆库分开：生命周期与清理策略不同
+    try:
+        from .tools.actions import get_action_store
+
+        store = await get_action_store()
+        pending = await store.list_actions("__probe__", status=None, limit=0)
+        BOOT_INFO["actions"] = {"pending_probe": len(pending)}
+        log.info("动作库就绪 | %s", settings.tool_actions_db_path)
+    except Exception as exc:  # noqa: BLE001
+        log.error("动作库初始化失败（写操作将不可用）: %s", exc)
+
     log.info("服务就绪 | LLM=%s", BOOT_INFO["llm"])
     yield
 
@@ -139,6 +150,7 @@ app.include_router(routes_chat.router)
 app.include_router(routes_kb.router)
 app.include_router(routes_eval.router)
 app.include_router(routes_memory.router)
+app.include_router(routes_actions.router)
 
 
 @app.get("/api/health", tags=["ops"], summary="健康检查（含当前模型与知识库状态）")

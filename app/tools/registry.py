@@ -61,13 +61,22 @@ class ToolRegistry:
         allow_write: bool = False,
     ) -> ToolResult:
         spec = self._tools.get(name)
-        args = args or {}
+        args = dict(args or {})
         if spec is None:
             return ToolResult(ok=False, name=name, error="工具未注册", args=args)
         if not spec.read_only and not allow_write:
             # 写操作必须在用户确认后才执行，这里直接拒绝自动调用
             return ToolResult(ok=False, name=name,
                               error="这是写操作，需要用户确认后才能执行", args=args)
+
+        # 身份统一在这里注入：工具自己拿不到调用者身份，也绝不接受调用方（模型）传入。
+        # 之前漏了这一步，写工具落库时 owner_id 是空的——单据挂在“查无此人”名下，
+        # 而接口返回看起来一切正常。这类错必须在执行器这一层堵死。
+        if spec.needs_owner:
+            if not owner_id:
+                return ToolResult(ok=False, name=name, args=args,
+                                  error="缺少员工身份，无法执行该工具")
+            args["owner_id"] = owner_id
 
         started = time.perf_counter()
         try:

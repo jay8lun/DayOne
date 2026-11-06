@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     # ---------- 工具调用（P3） ----------
     # 关掉就完全跳过工具路由（省一次模型往返），文档/记忆链路不受影响
     enable_tools: bool = True
+    # 写操作（提工单/申请）走「提议—确认—执行」。关掉则只能只读查询
+    enable_write_tools: bool = True
+    # 待确认操作的有效期：过期即作废，逼用户重新发起，避免「昨天点的确认今天才生效」
+    tool_confirm_ttl_minutes: int = 30
+    # 待确认操作与工单的独立库（与记忆库分开：生命周期和清理策略都不同）
+    tool_actions_db_path: str = "data/actions.db"
 
     # ---------- 上下文预算（P2） ----------
     # 关掉就退回「全塞进去」的老行为，方便 A/B

@@ -2,6 +2,8 @@
  * 纯原生 JS，无构建步骤：打开页面就能用，方便内网部署。 */
 
 const state = {
+  // 演示身份：真实部署从登录态取。改一次会记住，刷新不丢
+  ownerId: localStorage.getItem('dayone-owner') || 'emp-9',
   sessionId: null,
   sources: [],
   weak: new Set(),
@@ -174,7 +176,14 @@ function renderSources(sources, meta) {
   }
 
   if (!state.sources.length) {
-    sourcesEl.innerHTML = `<div class="empty"><p>这次没有召回到相关文档。</p></div>`;
+    const src = (meta && meta.answer_source) || 'knowledge_base';
+    const why = src === 'tool'
+      ? '这次由系统查询作答（工单 / 人员 / 流程），没有检索文档。'
+      : src === 'memory'
+        ? '这次由你的入职档案作答，没有检索文档。'
+        : '这次没有召回到相关文档。';
+    metaEl.innerHTML = '';
+    sourcesEl.innerHTML = `<div class="empty"><p>${esc(why)}</p></div>`;
     return;
   }
 
@@ -228,7 +237,12 @@ async function streamChat(question, shell) {
   const resp = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: headers(),
-    body: JSON.stringify({ question, session_id: state.sessionId, top_k: state.topK }),
+    body: JSON.stringify({
+      question,
+      session_id: state.sessionId,
+      top_k: state.topK,
+      owner_id: state.ownerId,
+    }),
   });
 
   if (!resp.ok || !resp.body) {
@@ -286,8 +300,83 @@ async function streamChat(question, shell) {
   return { answer, payload: donePayload };
 }
 
+/* 写操作：提议只是提议，必须点确认才执行。卡片会把结果换成工单号 */
+function renderConfirmCard(shell, action) {
+  const card = document.createElement('div');
+  card.className = 'confirm-card';
+  card.innerHTML = `
+    <div class="confirm-head">
+      <span class="confirm-badge">待确认</span>
+      <span class="confirm-hint">确认后才会提交，不会自动执行</span>
+    </div>
+    <div class="confirm-summary">${esc(action.summary || '')}</div>
+    <div class="confirm-foot">
+      <button class="confirm-btn primary" data-act="confirm">确认执行</button>
+      <button class="confirm-btn" data-act="cancel">取消</button>
+      <span class="confirm-exp">${esc((action.expires_at || '').slice(0, 16).replace('T', ' '))} 前有效</span>
+    </div>`;
+  shell.bubble.appendChild(card);
+
+  card.addEventListener('click', async (e) => {
+    const act = e.target.dataset && e.target.dataset.act;
+    if (!act) return;
+    const buttons = card.querySelectorAll('button');
+    buttons.forEach((b) => { b.disabled = true; });
+
+    const url = act === 'confirm' ? '/api/tools/confirm' : '/api/tools/cancel';
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ owner_id: state.ownerId, action_id: action.action_id }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = (data.detail && data.detail.message) || data.detail || `HTTP ${resp.status}`;
+        throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+      }
+      if (act === 'cancel') {
+        card.innerHTML = '<div class="confirm-done">已取消，没有提交任何内容。</div>';
+        return;
+      }
+      const res = (data.result && data.result.data) || {};
+      const ticket = res.ticket_no ? `<b>${esc(res.ticket_no)}</b>` : '已完成';
+      card.innerHTML = `<div class="confirm-done">${
+        data.replayed ? '这次是重复确认，已按上次结果处理（未重复提交）' : '已提交'
+      }：工单 ${ticket}${res.status ? ` · 状态 ${esc(res.status)}` : ''}</div>`;
+    } catch (err) {
+      card.querySelector('.confirm-foot').innerHTML =
+        `<span class="confirm-error">${esc(err.message)}</span>`;
+    }
+  });
+}
+
+/* 工具名对用户没意义，换成业务说法 */
+const TOOL_LABELS = {
+  get_my_onboarding_status: '入职流程',
+  lookup_colleague: '组织目录',
+  get_my_tickets: '工单记录',
+  submit_permission_request: '权限申请',
+};
+
+function toolLabel(name) {
+  return TOOL_LABELS[name] || name || '';
+}
+
 function renderFootnote(shell, p) {
   if (!p) return;
+  // 工具/档案作答没有引用体系，硬塞「引用 0/0、有据率 0.00」只会让人误解为质量差
+  if (p.answer_source === 'tool' || p.answer_source === 'memory') {
+    const toolName = (p.tool && p.tool.name) || '';
+    const label = p.answer_source === 'memory'
+      ? '来自你的入职档案'
+      : `系统查询${toolName ? `：${toolLabel(toolName)}` : ''}`;
+    shell.footnote.innerHTML =
+      `<span>${esc(label)}</span><span>耗时 <b>${p.latency_ms || 0}</b> ms</span>` +
+      (p.requires_confirmation ? '<span>尚未提交，等待确认</span>' : '');
+    shell.footnote.hidden = false;
+    return;
+  }
   const used = (p.citations || []).filter((c) => c.used).length;
   const bits = [
     `<span>引用 <b>${used}</b>/${(p.citations || []).length} 条来源</span>`,
@@ -334,9 +423,13 @@ async function send(question) {
         confidence: payload.confidence,
         coverage: payload.coverage,
         standalone_query: payload.standalone_query,
+        answer_source: payload.answer_source,
       });
       renderFootnote(shell, payload);
       $('btn-feedback').hidden = !payload.refused;
+      if (payload.requires_confirmation && payload.pending_action) {
+        renderConfirmCard(shell, payload.pending_action);
+      }
     }
     if (!answer && !(payload && payload.answer)) {
       shell.answer.innerHTML = '<p>没有拿到回答，请稍后重试。</p>';

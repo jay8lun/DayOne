@@ -212,3 +212,20 @@ def test_looks_actionable():
     assert looks_actionable("帮我查下王琳的分机号") is True
     assert looks_actionable("我的材料交了吗") is True
     assert looks_actionable("年假可以结转到明年吗") is False
+
+
+def test_ticket_question_not_swallowed_by_memory_route():
+    """「我提交的工单到哪一步」不能走记忆路由。
+
+    实测踩过：这句话同时满足记忆路由的三个条件（提自己 + 问哪一步 + 档案有状态），
+    于是被档案截胡，答成了「入职流程到入职培训」。档案里根本没有工单。
+    """
+    from app.rag.service import memory_covers
+
+    memory = (
+        "【已知用户信息】\n- city=杭州\n\n"
+        "【当前流程状态】\n- onboarding：当前「入职培训」，已交 1 项（身份证复印件），待补 学历证明"
+    )
+    assert memory_covers("我的流程走到哪一步了", memory) is True
+    assert memory_covers("我提交的权限工单到哪一步了", memory) is False
+    assert memory_covers("我的审批进度", memory) is False

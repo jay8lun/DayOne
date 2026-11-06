@@ -3,8 +3,11 @@
 - 「我的入职流程到哪一步了、还差什么材料」→ 读工作记忆（已有结构化数据，不该再检索文档）
 - 「某某在哪个部门 / 分机多少 / 坐哪」→ 读组织目录
 
-两个都是**只读**，出错也只是回答不出来，不会造成任何副作用。
-写操作（提工单、发起申请）按设计要先做「提议—确认—执行」，这版不放开。
+前两个是**只读**，出错也只是回答不出来，不会造成任何副作用。
+
+`submit_permission_request` 是**第一个写工具**：它不直接执行，只生成一条待确认操作
+（`app/tools/actions.py`），用户点确认才真的开单。配套 `get_my_tickets` 让它闭环——
+提交完能立刻问「我的工单到哪一步了」。
 """
 
 from __future__ import annotations
@@ -90,6 +93,66 @@ async def lookup_colleague(name: str = "", department: str = "") -> dict[str, An
     return {"matches": matches[:5], "total": len(matches)}
 
 
+async def submit_permission_request(
+    system: str = "", reason: str = "", urgency: str = "normal", owner_id: str = ""
+) -> dict[str, Any]:
+    """写操作：开一张权限申请工单（**必须经用户确认后才会被调用**）。"""
+    from .actions import get_action_store
+
+    system = (system or "").strip()
+    reason = (reason or "").strip()
+    if not system or not reason:
+        return {"error": "缺少系统名或申请理由，无法提交"}
+
+    store = await get_action_store()
+    ticket = await store.create_ticket(
+        owner_id=owner_id,
+        kind="permission_request",
+        payload={"system": system, "reason": reason, "urgency": urgency},
+    )
+    return {
+        "ticket_no": ticket["ticket_no"],
+        "system": system,
+        "status": "待审批",
+        "eta": "1 个工作日内" if urgency != "urgent" else "4 小时内",
+        "note": "审批结果会通过企业微信通知你，可以随时问我「我的工单到哪一步」",
+    }
+
+
+async def get_my_tickets(owner_id: str = "") -> dict[str, Any]:
+    """查自己提交过的工单状态。"""
+    if not owner_id:
+        return {"error": "缺少员工身份，无法查询工单"}
+    from .actions import get_action_store
+
+    store = await get_action_store()
+    rows = await store.list_tickets(owner_id)
+    return {
+        "owner_id": owner_id,
+        "count": len(rows),
+        "tickets": [
+            {
+                "ticket_no": r["ticket_no"],
+                "kind": r["kind"],
+                "status": r["status"],
+                "system": (r.get("payload") or {}).get("system"),
+                "created_at": r["created_at"][:19],
+            }
+            for r in rows[:10]
+        ],
+    }
+
+
+def _describe_permission(args: dict[str, Any]) -> str:
+    urgency = {"urgent": "加急", "normal": "普通"}.get(
+        str(args.get("urgency", "normal")), str(args.get("urgency", "normal"))
+    )
+    return (
+        f"提交权限申请：开通「{args.get('system', '')}」权限（{urgency}），"
+        f"理由：{args.get('reason', '')}"
+    )
+
+
 def register_builtin_tools() -> None:
     registry.register(
         ToolSpec(
@@ -101,6 +164,7 @@ def register_builtin_tools() -> None:
             parameters={"type": "object", "properties": {}, "required": []},
             handler=get_my_onboarding_status,
             read_only=True,
+            needs_owner=True,
             timeout_s=5.0,
         )
     )
@@ -121,6 +185,44 @@ def register_builtin_tools() -> None:
             },
             handler=lookup_colleague,
             read_only=True,
+            timeout_s=5.0,
+        )
+    )
+
+    registry.register(
+        ToolSpec(
+            name="submit_permission_request",
+            description=(
+                "为用户**提交一个系统权限申请工单**（写操作）。"
+                "用户明确要「申请/开通/提个工单」某个系统的权限时使用；"
+                "问「怎么申请」「需要什么条件」这类制度问题时不要用。"
+                "调用后会生成待确认操作，用户确认后才真正提交。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "system": {"type": "string", "description": "要开通的系统名，如「VPN」「GitLab」「生产数据库只读」"},
+                    "reason": {"type": "string", "description": "申请理由，如「需要访问测试环境日志排障」"},
+                    "urgency": {"type": "string", "enum": ["normal", "urgent"],
+                                "description": "紧急程度，默认 normal"},
+                },
+                "required": ["system", "reason"],
+            },
+            handler=submit_permission_request,
+            read_only=False,
+            needs_owner=True,
+            timeout_s=8.0,
+            describe=_describe_permission,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="get_my_tickets",
+            description="查询**当前用户本人**提交过的工单及其状态（如权限申请到哪一步了）。",
+            parameters={"type": "object", "properties": {}, "required": []},
+            handler=get_my_tickets,
+            read_only=True,
+            needs_owner=True,
             timeout_s=5.0,
         )
     )

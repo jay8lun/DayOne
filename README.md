@@ -292,11 +292,10 @@ python scripts/memory_demo.py
 问「王琳分机多少」「张伟坐哪」「我的流程走到哪一步」，这些答案不在手册里，在系统里。
 
 - 注册表 + schema：`app/tools/registry.py`，主流程只认名字和 schema——和适配器同一套哲学；
-- 两个只读工具：`get_my_onboarding_status`（读工作记忆）、`lookup_colleague`（读组织目录）；
+- 只读工具：`get_my_onboarding_status`、`lookup_colleague`、`get_my_tickets`；
 - 路由顺序 **记忆 → 工具 → 文档**：动作型问题不该被当成关键词去检索手册；
-- **身份由服务端注入**，模型不能自己填 `owner_id`（否则可以"替别人查进度"）；
-- **写操作默认拒绝执行**，必须显式 `allow_write`，为下一步「提议—确认」留口子；
-- 工具结果统一裁剪（`ToolResult.to_text`），并且每次调用写审计。
+- **身份由服务端注入**（执行器统一注入，模型不能自己填 `owner_id`）；
+- **结果必须裁剪**（`ToolResult.to_text`），每次调用写审计。
 
 实测：
 
@@ -305,16 +304,50 @@ python scripts/memory_demo.py
 | 帮我查一下王琳的分机号 | tool: lookup_colleague | 8007 / 人力资源部 / 5F-B02 |
 | 张伟坐在哪 | tool: lookup_colleague | 8F-A15 / 分机 8121 |
 | 入职流程走到哪一步了 | tool: get_my_onboarding_status | 入职培训，缺学历证明 |
+| 我提交的工单到哪一步了 | tool: get_my_tickets | REQ-20261106-001 / pending |
 | 一线城市住宿标准 | knowledge_base | 450/600/800 元，带 [[1]] 引用 |
+
+#### 写操作：提议 → 确认 → 执行（不会自己动手）
+
+「帮我提个 VPN 权限申请」这类请求，模型可以把参数抽出来，但**不能直接执行**——
+一次误开单会真的找人审批，撤不回来。所以分成三步：
+
+```text
+用户：帮我申请 VPN 权限，宿舍调试
+  ↓ 模型选 submit_permission_request（只生成待确认操作，不执行）
+  ↓ 返回 requires_confirmation=true + pending_action{action_id, summary, expires_at}
+用户点「确认执行」
+  ↓ POST /api/tools/confirm（action_id 即幂等键）
+  ↓ 执行 → 开单 → 返回 REQ-20261106-001
+再点一次「确认」
+  ↓ replayed=true，返回同一张单（不会开第二张）
+```
+
+四条边界都写在代码里，也都有测试/探针盯着：
+
+| 边界 | 做法 | 不这么做会怎样 |
+| --- | --- | --- |
+| 不确认不执行 | 执行器对 `read_only=False` 一律拒绝，只有 `confirm` 内部传 `allow_write` | 模型一句"帮你提交了"就真开了单 |
+| 重复确认不多开 | `action_id` 即幂等键，第二次返回 `replayed=true` | 连点三下 → HR 收到三张重复单 |
+| 别人的单不能确认 | 服务端比对 `owner_id`，403 且不透露参数 | 拿到 action_id 就能替别人办事 |
+| 过期即作废 | 默认 30 分钟 TTL，过期后确认直接拒 | 昨天点的确认今天生效，用户已改主意 |
+
+还有个容易忽略的点：**写操作的答案是确定性拼接的，不交给模型润色**。
+模型很容易顺着用户说"已经帮你提交了"，而这时其实还停在待确认。
+
+界面上的样子（`docs/ui-confirm.png`）：卡片里有摘要、`确认执行`、`取消`、有效期。
+
+> 写操作的数据落在独立的 `data/actions.db`（待确认操作 + 工单），
+> 不与记忆库混表：两者生命周期和清理策略完全不同。
 
 ### 闭环探针：怎么证明它「隔天还记得、该忘的忘干净」
 
 记忆系统最容易自欺：功能写完了，但没人验证它在时间轴上会收敛。
-`app/eval/probe.py` 里是 **11 条带日期的脚本**——在固定时钟上跑到「明天 / 两周后 / 一年后 / 两年后」，
+`app/eval/probe.py` 里是 **12 条带日期的脚本**——在固定时钟上跑到「明天 / 两周后 / 一年后 / 两年后」，
 跑完逐条断言，产出「哪条断言、期望什么、实际什么」：
 
 ```bash
-python scripts/probe.py                     # 11 条探针，约 0.3 秒
+python scripts/probe.py                     # 12 条探针，约 0.3 秒
 python scripts/probe.py --only noise_cleanup # 单条
 # 报告：docs/探针报告.md（含每条的时间轴与断言明细）
 ```
@@ -330,6 +363,7 @@ python scripts/probe.py --only noise_cleanup # 单条
 | `work_state_survives_decay` | 流程状态不参与淡忘；重复旧进度被打回 |
 | `forgetting_traceable` | 每次降级/埋葬在审计里查得到权重与闲置天数 |
 | `cross_user_isolation` | A 的信息不出现在 B 的画像与流程里 |
+| `write_action_idempotent` | 提议不落库、重复确认只开一张单、他人不能确认、过期作废 |
 | `chunks_never_compressed` | 预算再紧，chunk 原文完整进上下文 |
 | `summary_survives_fallback` | 摘要模型挂了也不丢历史（走抽取式兜底） |
 
@@ -358,6 +392,11 @@ python scripts/probe.py --only noise_cleanup # 单条
 | POST | `/api/kb/ingest` | 触发入库（`force` / `reset` / `limit`） |
 | POST | `/api/kb/search` | 检索调试：只看召回，不生成 |
 | GET | `/api/eval/dataset` · POST `/api/eval/run` · GET `/api/eval/last` | 评估集与评估报告 |
+| GET | `/api/tools` | 工具清单（`read_only` 标记、写开关、确认有效期） |
+| POST | `/api/tools/propose` | 生成待确认操作（**不执行**；`client_key` 防连点） |
+| POST | `/api/tools/confirm` | 确认执行（`action_id` 即幂等键，重复确认返回 `replayed=true`） |
+| POST | `/api/tools/cancel` | 取消待确认操作 |
+| GET | `/api/tools/pending` · GET `/api/tools/tickets` | 我的待办 / 我提交过的工单 |
 
 ```bash
 # 一次性问答
@@ -450,8 +489,9 @@ DayOne/
 - **记忆子系统**（工作记忆 / 长期事实 / 双时间轴冲突 / 三级遗忘 / 审计日志 / 统一时钟支持时间旅行）
 - **上下文预算**（五层分配 / 资料不压缩 / 旧历史摘要 / 个人状态问题检索前分流）
 - **工具调用**（注册表 / 执行器 / 路由 / 只读白名单 / 身份注入 / 审计）
-- **闭环探针**（11 条：跨天保留 / 冲突 / 遗忘 / 隔离 / 压缩不吞证据，附报告）
-- 拒答兜底、SSE 流式、离线降级、Docker 化、评估脚本与 62 个测试
+- **确认式写操作**（提议 / 确认 / 幂等 / 归属校验 / TTL / 独立动作库 / 工单查询）
+- **闭环探针**（12 条：跨天保留 / 冲突 / 遗忘 / 隔离 / 写操作幂等 / 压缩不吞证据，附报告）
+- 拒答兜底、SSE 流式、离线降级、Docker 化、评估脚本与 74 个测试
 
 **没做（有意为之，避免过度设计）**
 

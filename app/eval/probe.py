@@ -92,10 +92,13 @@ class ProbeReport:
 class ProbeContext:
     """给探针用的小工具集：拨时钟、写记忆、读回来、下断言，顺手记时间轴。"""
 
-    def __init__(self, service: MemoryService, store: MemoryStore, owner: str) -> None:
+    def __init__(
+        self, service: MemoryService, store: MemoryStore, owner: str, tmpdir: Path
+    ) -> None:
         self.service = service
         self.store = store
         self.owner = owner
+        self.tmpdir = tmpdir
         self.checks: list[Check] = []
         self.timeline: list[str] = []
         self._now: datetime = FixedClock("2026-11-01T09:00:00").now()
@@ -483,6 +486,68 @@ async def p_isolation(ctx: ProbeContext) -> None:
     ctx.check_in("B 的流程是「入职培训」", "入职培训", b_work)
 
 
+@probe(
+    "write", "write_action_idempotent",
+    "能办事但不能乱办：确认才执行、重复确认只开一张单、别人的单确认不了",
+    "「帮我提个权限申请」如果点一次确认就开一张单，用户连点三下就是三张单，"
+    "HR 那边会收到三条重复审批。这条探针验证提议不落库、确认幂等、越权被拒、过期作废。",
+)
+async def p_write(ctx: ProbeContext) -> None:
+    from ..tools.actions import ActionError, reset_actions
+    from ..tools.builtin import get_my_tickets
+    from ..tools.store import ActionStore
+
+    store = ActionStore(ctx.tmpdir / "actions.db")
+    await store.init()
+    svc = reset_actions(store, audit=False)
+    args = {"system": "VPN", "reason": "需要在宿舍调试测试环境"}
+    try:
+        with ctx.at("2026-11-06T10:00:00"):
+            a1 = await svc.propose(ctx.owner, "submit_permission_request", args, client_key="msg-1")
+            a2 = await svc.propose(ctx.owner, "submit_permission_request", args, client_key="msg-1")
+            ctx.check("连点两次只生成一条待办", a1["id"] == a2["id"] and bool(a2["deduped"]),
+                      f"a1={a1['id']} a2={a2['id']} deduped={a2['deduped']}")
+            ctx.check("提议阶段不产生工单", await store.count_tickets(ctx.owner) == 0,
+                      f"当前工单数 {await store.count_tickets(ctx.owner)}")
+
+            first = await svc.confirm(ctx.owner, a1["id"])
+            second = await svc.confirm(ctx.owner, a1["id"])
+            ticket_no = (first["result"].get("data") or {}).get("ticket_no", "")
+            ctx.check("确认后开出一张工单", ticket_no.startswith("REQ-"), f"ticket_no={ticket_no!r}")
+            ctx.check("重复确认是重放而非再开一单", second["replayed"] is True and second["result"] == first["result"],
+                      f"replayed={second['replayed']}")
+            ctx.check("工单只有一张", await store.count_tickets(ctx.owner) == 1,
+                      f"当前工单数 {await store.count_tickets(ctx.owner)}")
+
+            # 越权：别人不能确认我的待办
+            foreign = await svc.propose(ctx.owner, "submit_permission_request",
+                                        {"system": "生产数据库只读", "reason": "排障"},
+                                        client_key="msg-2")
+            try:
+                await svc.confirm("intruder", foreign["id"])
+                ctx.check("他人无法确认我的待办", False, "居然确认成功了")
+            except ActionError as exc:
+                ctx.check("他人无法确认我的待办", exc.code == "forbidden", f"code={exc.code}")
+            ctx.check("越权尝试未产生工单", await store.count_tickets("intruder") == 0,
+                      f"intruder 工单数 {await store.count_tickets('intruder')}")
+
+            # 过期：把有效期调到过去，模拟「昨天的确认今天才点」
+            await store.update_action(foreign["id"], expires_at="2020-01-01T00:00:00+00:00")
+            try:
+                await svc.confirm(ctx.owner, foreign["id"])
+                ctx.check("过期操作作废", False, "过期了还能确认")
+            except ActionError as exc:
+                ctx.check("过期操作作废", exc.code == "expired", f"code={exc.code}")
+
+        with ctx.at("2026-11-06T10:05:00"):
+            info = await get_my_tickets(owner_id=ctx.owner)
+        ctx.check("提交后能立刻查到工单", any(t["ticket_no"] == ticket_no for t in info["tickets"]),
+                  f"查到 {[t['ticket_no'] for t in info['tickets']]}")
+    finally:
+        reset_actions(None)
+        store.close()
+
+
 # ============================ 探针（上下文：压缩不能吃掉证据） ============================
 
 
@@ -605,7 +670,7 @@ async def _run_one(p: Probe, owner: str = "probe-user") -> ProbeReport:
     started = time.perf_counter()
     try:
         await store.init()
-        ctx = ProbeContext(MemoryService(store), store, owner)
+        ctx = ProbeContext(MemoryService(store), store, owner, tmpdir)
         await p.fn(ctx)
         report.checks = ctx.checks
         report.timeline = ctx.timeline
@@ -661,6 +726,7 @@ CATEGORY_LABEL = {
     "conflict": "冲突",
     "forgetting": "遗忘",
     "work": "工作记忆",
+    "write": "写操作",
     "audit": "可解释",
     "context": "上下文",
 }
