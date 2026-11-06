@@ -193,8 +193,71 @@ def test_ticket_rule_check_merges_rule_and_status(memory_svc, action_svc):
     _run(case())
 
 
-# ---------------- 边界 ----------------
+# ---------------- 剧本 4：职级 → 差旅标准 ----------------
 
+TRAVEL_TABLE = """## 差旅标准
+
+| 职级 | 住宿（一线城市） | 住宿（其他城市） | 交通 |
+| --- | --- | --- | --- |
+| P1—P4 / 初级 | 450 元/晚 | 350 元/晚 | 高铁二等座 |
+| P5—P6 / 中级 | 600 元/晚 | 450 元/晚 | 高铁一等座 |
+| P7 及以上 | 800 元/晚 | 600 元/晚 | 高铁一等座 |
+
+一线城市指北京、上海、广州、深圳。超出标准的住宿需提前申请特批。
+"""
+
+
+def _travel(memory_svc, question: str, level: str | None = "P5"):
+    async def case():
+        owner = "u1"
+        if level:
+            await memory_svc.remember(owner, "level", level)
+        ctx = _DocCtx(memory=memory_svc, question=question, owner_id=owner,
+                      llm=_StubLLM(), text=TRAVEL_TABLE)
+        return await orch.travel_standard(ctx), ctx
+
+    return _run(case())
+
+
+def test_travel_level_picks_the_right_table_row(memory_svc: MemoryService):
+    """P5 不能被读成 P4 那一行：表格按区间匹配，不靠模型看。"""
+    result, ctx = _travel(memory_svc, "我下周去上海出差，住宿能报多少", level="P5")
+    assert result is not None
+    assert "600 元/晚" in result["answer"] and "450" not in result["answer"]
+    assert [s.kind for s in ctx.plan] == ["memory", "doc"]
+
+
+def test_travel_top_level_uses_and_above_row(memory_svc: MemoryService):
+    result, _ = _travel(memory_svc, "我 P8，去北京住哪", level="P8")
+    assert result is not None
+    assert "800 元/晚" in result["answer"]
+
+
+def test_travel_non_tier1_city(memory_svc: MemoryService):
+    """杭州不是一线：要落到「其他城市」那一档，而不是拿一线的价格。"""
+    result, _ = _travel(memory_svc, "我去杭州出差，酒店能报多少", level="P5")
+    assert result is not None
+    assert "450 元/晚" in result["answer"]
+    assert "其他城市" in result["answer"]
+
+
+def test_travel_without_level_does_not_guess(memory_svc: MemoryService):
+    """不知道职级就给对照表，不能挑一个数字糊弄。"""
+    result, _ = _travel(memory_svc, "我出差住宿能报多少", level=None)
+    assert result is not None
+    assert "告诉我你的职级" in result["answer"]
+
+
+def test_travel_does_not_hijack_generic_or_process_questions(memory_svc):
+    async def case():
+        orchestrator = orch.Orchestrator(memory=memory_svc)
+        assert await orchestrator.run("一线城市住宿标准是多少？", "u1", _StubLLM()) is None
+        assert await orchestrator.run("我住宿怎么报销", "u1", _StubLLM()) is None
+
+    _run(case())
+
+
+# ---------------- 边界 ----------------
 
 def test_rule_question_is_not_hijacked(memory_svc, action_svc):
     """「申请权限需要什么条件」是规则问题，编排不能抢。"""

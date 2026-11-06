@@ -19,17 +19,19 @@
 4. **写操作仍然只提议**：编排里遇到写工具只生成待确认操作，绝不执行；
 5. **不抢单意图**：匹配条件要求多个信号同时命中，普通制度问题照旧走文档检索。
 
-## 三个剧本（都能在语料/数据里找到依据）
+## 四个剧本（都能在语料/数据里找到依据）
 
 | 剧本 | 链路 | 依赖关系 |
 | --- | --- | --- |
 | `mentor_contact` | 记忆（导师=王琳）→ 工具（查组织目录） | 导师名是上一步的输出，作为下一步的入参 |
 | `first_week_env` | 文档（第一周要勾哪些系统）→ 提案（生成待确认申请） | 系统清单来自文档片段，不是模型编的 |
 | `ticket_rule_check` | 文档（敏感权限有效期）→ 工具（查我的工单） | 规则与个人状态两路数据合并回答 |
+| `travel_standard` | 记忆（我的职级）→ 文档（差旅标准表） | 用职级把「制度表格」定位到具体一行，而不是把整张表甩给用户 |
 """
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -95,7 +97,10 @@ class RecipeContext:
         rows = await memory.recall(self.owner_id)
         data = {str(r["predicate"]): str(r["value"]) for r in rows}
         summary = "、".join(f"{k}={v}" for k, v in list(data.items())[:4]) or "无记录"
-        self.step("读取入职档案", "memory", bool(data), summary)
+        # ok 表示「这一步执行成功了吗」，不是「有没有查到东西」。
+        # 档案里没记录也是一次成功的读取——前端把这种情况画成红色失败，
+        # 用户会以为系统坏了；真正的失败只有「没有身份，压根没查」。
+        self.step("读取入职档案", "memory", True, summary)
         return data
 
     # ---------- 调工具（只读） ----------
@@ -314,6 +319,123 @@ async def ticket_rule_check(ctx: RecipeContext) -> dict[str, Any] | None:
     }
 
 
+# ============================ 剧本 4：职级 → 差旅标准 ============================
+
+_TIER1_CITIES = ("北京", "上海", "广州", "深圳")
+
+# 非一线城市不用穷举：只要认出「用户说了个城市、但它不是一线」，就能落到其他城市那一档。
+# 认不出来也不要紧，按两档一起答，不会答错。
+_OTHER_CITIES = (
+    "杭州", "南京", "成都", "武汉", "西安", "苏州", "天津", "重庆", "长沙", "合肥",
+    "郑州", "青岛", "厦门", "宁波", "无锡", "济南", "福州", "大连", "沈阳", "昆明",
+    "南昌", "贵阳", "石家庄", "太原", "长春", "哈尔滨", "兰州", "南宁", "海口", "珠海",
+)
+
+
+def _travel_city(question: str) -> tuple[str, bool] | None:
+    """返回 (城市, 是否一线)；问题里没提城市返回 None。"""
+    for city in _TIER1_CITIES:
+        if city in question:
+            return city, True
+    for city in _OTHER_CITIES:
+        if city in question:
+            return city, False
+    return None
+
+
+def _parse_level(text: str) -> str:
+    """从「P5」「p6」「P 7」里取出职级；取不到返回空串（不猜）。"""
+    match = re.search(r"[Pp]\s*([1-9])\b", text or "")
+    return f"P{match.group(1)}" if match else ""
+
+
+def _match_level_row(text: str, level: str) -> list[str] | None:
+    """在 Markdown 表格里定位职级对应的那一行。
+
+    差旅标准是**表格**，直接整段丢给模型，它经常把 P5 读成 P4 那一行。
+    这里按区间精确匹配：P5 命中 `P5—P6`，P8 命中 `P7 及以上`。
+    """
+    rank = int(level[1:])
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        head = cells[0]
+        span = re.search(r"P(\d+)\s*[—\-–~至]\s*P(\d+)", head)
+        if span and int(span.group(1)) <= rank <= int(span.group(2)):
+            return cells
+        above = re.search(r"P(\d+)\s*及以上", head)
+        if above and rank >= int(above.group(1)):
+            return cells
+    return None
+
+
+def _price(cell: str) -> str:
+    found = re.search(r"(\d+)", cell or "")
+    return f"{found.group(1)} 元/晚" if found else (cell or "")
+
+
+def _tier_name(head: str) -> str:
+    return head.split("/")[-1].strip() if "/" in head else head.strip()
+
+
+async def travel_standard(ctx: RecipeContext) -> dict[str, Any] | None:
+    """「我 P5，下周去上海出差，住宿能报多少」：档案里的职级 + 文档里的表格行。"""
+    profile = await ctx.profile()
+    # 职级可能记在档案里，也可能用户这句话里就说了
+    level = _parse_level(profile.get("level", "")) or _parse_level(ctx.question)
+
+    chunks = await ctx.retrieve("差旅标准 住宿 一线城市 其他城市 职级 元/晚 特批", k=3)
+    if not chunks:
+        return None
+
+    if not level:
+        # 不知道职级就不硬猜。给对照表 + 一句「告诉我职级我就算准」
+        return {
+            "answer": (
+                "住宿标准按职级分档：\n"
+                "- P1—P4：一线城市 450 元/晚，其他城市 350 元/晚[[1]]\n"
+                "- P5—P6：一线城市 600 元/晚，其他城市 450 元/晚\n"
+                "- P7 及以上：一线城市 800 元/晚，其他城市 600 元/晚\n"
+                "告诉我你的职级和目的地，我直接给你具体数字。"
+            ),
+            "chunks": chunks[:1],
+            "source": "orchestrated",
+        }
+
+    city = _travel_city(ctx.question)
+    for chunk in chunks:
+        cells = _match_level_row(getattr(chunk, "text", ""), level)
+        if not cells:
+            continue
+        tier = _tier_name(cells[0])
+        if city and city[1]:
+            body = (
+                f"你是 {level}（{tier}），去{city[0]}（一线城市）出差，"
+                f"住宿标准 {_price(cells[1])}[[1]]。"
+            )
+        elif city:
+            body = (
+                f"你是 {level}（{tier}），去{city[0]}（其他城市）出差，"
+                f"住宿标准 {_price(cells[2])}[[1]]。"
+            )
+        else:
+            body = (
+                f"你是 {level}（{tier}）：一线城市 {_price(cells[1])}，"
+                f"其他城市 {_price(cells[2])}[[1]]。"
+            )
+        return {
+            "answer": body + "超出标准的住宿要在出差前提交特批，事后申请一律不批。",
+            # 只带命中的那一段：引用编号 [[1]] 必须对应它，否则回验会判无据
+            "chunks": [chunk],
+            "source": "orchestrated",
+        }
+    return None
+
+
 _SYSTEM_ALLOWLIST = (
     "GitLab", "Jenkins", "KaiRAG", "数据平台", "VPN", "生产数据库", "模型密钥", "OA",
 )
@@ -367,7 +489,9 @@ RECIPES: list[Recipe] = [
         id="first_week_env",
         title="第一周开通哪些系统并代为提案",
         match=lambda q: _has(q, "开通", "开权限", "申请", "开一下", "都开", "开个", "开权限")
-        and _has(q, "系统", "权限")
+        # 新人不会说「帮我开通系统权限」，他说的是「开发环境都开一下」。
+        # 所以第二个条件必须收「开发环境」这类说法，否则真实用户的话术全漏。
+        and _has(q, "系统", "权限", "开发环境", "环境开通")
         and _has(q, "哪些", "什么", "清单", "帮我", "提一下", "第一周", "开发环境")
         # 「申请权限需要什么条件」是规则问题，交给文档检索，不在这里代办
         and not _has(q, *_RULE_WORDS),
@@ -379,6 +503,20 @@ RECIPES: list[Recipe] = [
         match=lambda q: _has(q, "权限", "工单", "申请")
         and _has(q, "多久", "到期", "有效期", "还有效", "什么时候失效"),
         run=ticket_rule_check,
+    ),
+    Recipe(
+        id="travel_standard",
+        title="我的职级能住多少钱的酒店",
+        match=lambda q: _has(q, "住宿", "酒店", "房费", "住宿费", "住哪", "住一晚")
+        and _has(q, "出差", "住", "酒店", "住宿")
+        # 必须是「跟我有关」。问通用标准（「一线城市住宿标准是多少」）应走文档检索：
+        # 编排会按个人职级算一个数字，而问的人可能只是想知道制度本身。
+        and (_has(q, "我") or bool(re.search(r"[Pp][1-9]", q)))
+        # 「同事 P5 去北京能报多少」问的是别人，不能拿「你」的档案去套
+        and not _has(q, "同事", "别人", "我朋友")
+        # 「我住宿怎么报销」问的是流程，不是标准 → 交回文档链路
+        and not _has(q, *_RULE_WORDS),
+        run=travel_standard,
     ),
 ]
 
