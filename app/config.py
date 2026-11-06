@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     # 回答时是否注入「已知用户信息 + 当前流程状态」
     memory_inject_context: bool = True
 
+    # ---------- 工具调用（P3） ----------
+    # 关掉就完全跳过工具路由（省一次模型往返），文档/记忆链路不受影响
+    enable_tools: bool = True
+
     # ---------- 上下文预算（P2） ----------
     # 关掉就退回「全塞进去」的老行为，方便 A/B
     enable_context_budget: bool = True

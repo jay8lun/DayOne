@@ -24,6 +24,13 @@ from .schemas import IngestRequest, SearchRequest
 router = APIRouter(prefix="/api/kb", tags=["knowledge-base"], dependencies=[Depends(require_api_key)])
 
 
+@router.get("/tools", summary="已注册的工具（含只读标记，写操作不会被自动执行）")
+async def tools() -> dict:
+    from ..tools import registry
+
+    return {"ok": True, "count": len(registry.names()), "tools": registry.describe()}
+
+
 @router.get("/stats", summary="知识库统计（文档数、分块数、当前 embedding）")
 async def stats() -> dict:
     embedder = get_embedder()

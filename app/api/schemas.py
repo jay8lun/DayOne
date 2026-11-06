@@ -51,7 +51,8 @@ class ChatResponse(BaseModel):
     llm: dict[str, str] = {}
     latency_ms: int = 0
     context: dict[str, Any] = Field(default_factory=dict, description="上下文预算去向（可观测）")
-    answer_source: str = Field("knowledge_base", description="答案来源：knowledge_base | memory")
+    answer_source: str = Field("knowledge_base", description="答案来源：knowledge_base | memory | tool")
+    tool: dict[str, Any] = Field(default_factory=dict, description="本次调用到的工具（名称/参数/是否成功）")
 
 
 class ResetRequest(BaseModel):

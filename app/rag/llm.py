@@ -16,6 +16,7 @@ import json
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import settings
@@ -25,6 +26,35 @@ from ..core.logging import get_logger
 log = get_logger(__name__)
 
 Message = dict[str, str]
+
+
+@dataclass
+class ToolCall:
+    """模型发起的一次工具调用。参数是**未解析的 JSON 字符串**——
+    必须自己解析并校验，不能相信模型给的一定合法。"""
+
+    id: str
+    name: str
+    arguments: str = "{}"
+
+    def args(self) -> dict[str, Any]:
+        try:
+            data = json.loads(self.arguments or "{}")
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+
+@dataclass
+class LLMToolResponse:
+    """带工具的一轮回复：要么是文本，要么是调用请求（也可能两者都有）。"""
+
+    content: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+    @property
+    def wants_tool(self) -> bool:
+        return bool(self.tool_calls)
 
 _CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
 _ASCII_WORD = re.compile(r"[a-zA-Z0-9_.+#\-]+")
@@ -79,6 +109,22 @@ class BaseLLM(ABC):
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]: ...
 
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        temperature: float | None = 0.0,
+        max_tokens: int | None = 400,
+    ) -> LLMToolResponse:
+        """带工具的一轮。默认实现退化为纯文本——**这是有意的**：
+
+        离线 mock、或某些不支持 function calling 的代理，不该让整条链路崩，
+        只是「不会调用工具」，其他能力照常。
+        """
+        text = await self.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        return LLMToolResponse(content=text)
+
 
 class OpenAICompatLLM(BaseLLM):
     provider = "openai"
@@ -123,6 +169,38 @@ class OpenAICompatLLM(BaseLLM):
         except Exception as exc:  # noqa: BLE001
             raise LLMError(f"大模型调用失败：{exc}") from exc
         return (resp.choices[0].message.content or "").strip()
+
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        temperature: float | None = 0.0,
+        max_tokens: int | None = 400,
+    ) -> LLMToolResponse:
+        client = self._get_client()
+        try:
+            resp = await client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=settings.llm_temperature if temperature is None else temperature,
+                max_tokens=max_tokens or settings.llm_max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise LLMError(f"工具调用失败：{exc}") from exc
+
+        msg = resp.choices[0].message
+        calls = [
+            ToolCall(
+                id=getattr(tc, "id", "") or f"call_{i}",
+                name=getattr(tc.function, "name", "") or "",
+                arguments=getattr(tc.function, "arguments", "") or "{}",
+            )
+            for i, tc in enumerate(getattr(msg, "tool_calls", None) or [])
+        ]
+        return LLMToolResponse(content=(msg.content or "").strip(), tool_calls=calls)
 
     async def stream(
         self,

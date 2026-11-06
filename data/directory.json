@@ -1,0 +1,14 @@
+[
+  {"name": "王琳", "department": "人力资源部", "title": "HRBP（入职/转正）", "ext": "8007", "seat": "5F-B02", "email": "wanglin@yunshu.example"},
+  {"name": "张伟", "department": "平台研发部", "title": "技术专家（新人导师）", "ext": "8121", "seat": "8F-A15", "email": "zhangwei@yunshu.example"},
+  {"name": "李强", "department": "信息技术部", "title": "IT 支持", "ext": "8020", "seat": "3F-C10", "email": "liqiang@yunshu.example"},
+  {"name": "陈静", "department": "人力资源部", "title": "薪酬福利专员", "ext": "8012", "seat": "5F-B05", "email": "chenjing@yunshu.example"},
+  {"name": "刘洋", "department": "财务部", "title": "报销审核", "ext": "8033", "seat": "5F-A08", "email": "liuyang@yunshu.example"},
+  {"name": "赵敏", "department": "平台研发部", "title": "前端工程师", "ext": "8134", "seat": "8F-A20", "email": "zhaomin@yunshu.example"},
+  {"name": "孙浩", "department": "平台研发部", "title": "后端工程师", "ext": "8136", "seat": "8F-A22", "email": "sunhao@yunshu.example"},
+  {"name": "周婷", "department": "产品部", "title": "产品经理", "ext": "8210", "seat": "7F-B03", "email": "zhouting@yunshu.example"},
+  {"name": "吴磊", "department": "行政部", "title": "门禁与工位管理", "ext": "8045", "seat": "1F-A01", "email": "wulei@yunshu.example"},
+  {"name": "郑霞", "department": "法务合规部", "title": "合同与合规", "ext": "8302", "seat": "6F-C08", "email": "zhengxia@yunshu.example"},
+  {"name": "黄鹏", "department": "信息安全部", "title": "账号权限审批", "ext": "8060", "seat": "3F-C15", "email": "huangpeng@yunshu.example"},
+  {"name": "何雨", "department": "培训发展部", "title": "新人培训", "ext": "8052", "seat": "5F-D01", "email": "heyu@yunshu.example"}
+]

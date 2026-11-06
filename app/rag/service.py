@@ -126,6 +126,10 @@ class RagService:
         if early:
             return early
 
+        tool_payload = await self._tool_answer(session_id, question, owner_id, t0)
+        if tool_payload:
+            return tool_payload
+
         prep = await self.prepare(question, session_id)
 
         if not prep["sufficient"]:
@@ -172,6 +176,27 @@ class RagService:
                 for i in range(0, len(answer), 12):
                     yield {"type": "delta", "text": answer[i : i + 12]}
                 payload = self._payload_from_memory(session_id, question, answer, t0)
+                self._remember(session_id, question, payload["answer_plain"])
+                yield {"type": "done", **payload}
+                return
+
+            from ..tools.router import answer_with_tool, route_tool
+
+            tool_info = await route_tool(self.llm, question, owner_id)
+            if tool_info:
+                yield {"type": "status", "stage": "tool",
+                       "message": f"正在查询系统（{tool_info['tool']}）…"}
+                answer = await answer_with_tool(self.llm, question, tool_info["text"])
+                for i in range(0, len(answer), 12):
+                    yield {"type": "delta", "text": answer[i : i + 12]}
+                payload = self._payload_from_memory(
+                    session_id, question, answer, t0,
+                    source="tool",
+                    trace=[f"route: 动作型问题 → 工具 {tool_info['tool']}（ok={tool_info['ok']}）"],
+                    retrieval={"mode": "tool", "tool": tool_info["tool"], "args": tool_info["args"]},
+                )
+                payload["tool"] = {"name": tool_info["tool"], "args": tool_info["args"],
+                                   "ok": tool_info["ok"]}
                 self._remember(session_id, question, payload["answer_plain"])
                 yield {"type": "done", **payload}
                 return
@@ -241,8 +266,36 @@ class RagService:
         self._remember(session_id, question, payload["answer_plain"])
         return payload
 
+    async def _tool_answer(
+        self, session_id: str, question: str, owner_id: str | None, t0: float
+    ) -> dict[str, Any] | None:
+        """动作型问题的直通路径：查系统（只读工具），不走文档检索。"""
+        from ..tools.router import answer_with_tool, route_tool
+
+        info = await route_tool(self.llm, question, owner_id)
+        if not info:
+            return None
+        answer = await answer_with_tool(self.llm, question, info["text"])
+        payload = self._payload_from_memory(
+            session_id, question, answer, t0,
+            source="tool",
+            trace=[f"route: 动作型问题 → 工具 {info['tool']}（{info['elapsed_ms']}ms，ok={info['ok']}）"],
+            retrieval={"mode": "tool", "tool": info["tool"], "args": info["args"], "ok": info["ok"]},
+        )
+        payload["tool"] = {"name": info["tool"], "args": info["args"], "ok": info["ok"]}
+        self._remember(session_id, question, payload["answer_plain"])
+        return payload
+
     def _payload_from_memory(
-        self, session_id: str, question: str, answer: str, t0: float
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        t0: float,
+        *,
+        source: str = "memory",
+        trace: list[str] | None = None,
+        retrieval: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         plain = re.sub(r"\[\[\d+\]\]", "", answer).strip()
         return {
@@ -258,10 +311,10 @@ class RagService:
             "citation_precision": 0.0,
             "confidence": 0.0,
             "coverage": 0.0,
-            "retrieval": {"mode": "memory", "note": "个人状态问题，未检索文档"},
-            "trace": ["route: 命中个人档案，跳过知识库检索"],
+            "retrieval": retrieval or {"mode": "memory", "note": "个人状态问题，未检索文档"},
+            "trace": trace or ["route: 命中个人档案，跳过知识库检索"],
             "context": {},
-            "answer_source": "memory",
+            "answer_source": source,
             "llm": {"provider": self.llm.provider, "model": self.llm.model},
             "latency_ms": int((time.perf_counter() - t0) * 1000),
         }
