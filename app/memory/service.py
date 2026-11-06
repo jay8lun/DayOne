@@ -306,12 +306,20 @@ class MemoryService:
             {r["owner_id"] for r in await self._all_active()}
         )
         cold, buried, kept = [], [], []
+        pinned = 0
+        pinned_preds = settings.pinned_predicates
         for oid in owners:
             # 先给「已有的冷归档」拍快照：本轮刚降级的记录不该在同一次里被立刻埋葬，
             # 否则一次 decay 就把「归档」这级跳过去了，线上看不出是谁在什么时候被冷落的。
             cold_before = await self.store.facts(oid, status="cold")
             rows = await self.store.facts(oid, status="active")
             for row in rows:
+                # 常驻字段（工号、部门、导师…）不参与衰减：这类信息"没人提"不代表"没价值"，
+                # 按时间淘汰只会让人事信息莫名其妙消失。它们由流程/HR 系统负责失效。
+                if row["predicate"] in pinned_preds:
+                    pinned += 1
+                    kept.append(row["id"])
+                    continue
                 score = self._weight(row, now_dt, half_life)
                 if score < limit:
                     cold.append({"fact_id": row["id"], "predicate": row["predicate"],
@@ -334,7 +342,7 @@ class MemoryService:
                                                {"fact_id": row["id"], "idle_days": round(idle, 1)})
 
         return {"owners": len(owners), "folded_to_cold": cold, "tombstoned": buried,
-                "kept": len(kept), "dry_run": dry_run,
+                "kept": len(kept), "pinned": pinned, "dry_run": dry_run,
                 "params": {"half_life_days": half_life, "threshold": limit, "tombstone_days": keep_days}}
 
     def _weight(self, row: dict[str, Any], now_dt, half_life: float) -> float:

@@ -112,8 +112,16 @@ class Settings(BaseSettings):
     memory_decay_threshold: float = 0.15
     # 冷归档放置多久后立墓碑（墓碑可审计，不物理删除）
     memory_tombstone_days: float = 90.0
+    # 常驻字段：不参与衰减。衰减只按「时间 × 频次」，分不清闲聊和身份信息——
+    # 不保护的话，一年没人提工号就被清掉了，而办手续每次都要用。
+    # 逗号分隔的 predicate；换语料/换公司按自家字段名改。
+    memory_pinned_predicates: str = "employee_id,department,mentor,job_level,email"
     # 回答时是否注入「已知用户信息 + 当前流程状态」
     memory_inject_context: bool = True
+
+    @property
+    def pinned_predicates(self) -> set[str]:
+        return {x.strip() for x in self.memory_pinned_predicates.split(",") if x.strip()}
 
     # ---------- 工具调用（P3） ----------
     # 关掉就完全跳过工具路由（省一次模型往返），文档/记忆链路不受影响
