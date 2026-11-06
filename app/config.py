@@ -145,6 +145,10 @@ class Settings(BaseSettings):
     # 最近 N 轮原文不压缩（压了会破坏指代消解）
     context_recent_turns: int = 2
     context_summary_tokens: int = 320
+    # 多级摘要入库：摘要写盘后只压「新增轮次」，同一段历史不重复花钱
+    enable_summary_store: bool = True
+    context_summary_store: str = "data/summaries.db"
+    context_summary_max_sessions: int = 500
 
     # ---------- 存储 ----------
     chroma_dir: str = "data/chroma"
@@ -153,6 +157,8 @@ class Settings(BaseSettings):
 
     # ---------- 评估 ----------
     eval_dataset: str = "app/eval/datasets/golden_onboarding.jsonl"
+    # 编排端到端评测集：不评「找得到」，评「多步的事有没有办对」
+    eval_orchestration_dataset: str = "app/eval/datasets/orchestration_e2e.jsonl"
     eval_top_k: int = 5
 
     # ---------- 派生属性 ----------

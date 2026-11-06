@@ -262,3 +262,23 @@ class ActionStore:
             return int(self._get_conn().execute(
                 "SELECT COUNT(*) FROM tickets WHERE owner_id = ?", (owner_id,)
             ).fetchone()[0])
+
+    async def purge_owner(self, owner_id: str) -> int:
+        """清掉某个 owner 的待确认操作与工单，返回删除行数。
+
+        和记忆库的同名方法一样，只服务**端到端评测**：每条用例都要从
+        「没提过申请」的干净状态开始，否则「你最近一张工单是 …」会把上一条
+        用例的工单带进来，判定就假了。
+        """
+
+        def op() -> int:
+            with self._lock:
+                conn = self._get_conn()
+                deleted = 0
+                for table in ("pending_actions", "tickets"):
+                    cur = conn.execute(f"DELETE FROM {table} WHERE owner_id = ?", (owner_id,))
+                    deleted += cur.rowcount or 0
+                conn.commit()
+                return deleted
+
+        return await asyncio.to_thread(op)

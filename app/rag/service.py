@@ -299,6 +299,10 @@ class RagService:
 
         if chunks and "[[" in answer:
             payload.update(verify_and_attach(answer, chunks))
+        elif chunks:
+            # 编排答案里没写引用标记，但文档确实参与了（比如「从文档提取系统清单」）。
+            # 这时也要把来源回填：前端要能点开看依据，评测才能算这篇文档有没有被用上。
+            payload["sources"] = build_sources(chunks)
         if result.get("requires_confirmation"):
             payload["requires_confirmation"] = True
             payload["pending_action"] = result.get("pending_action") or {}
@@ -470,7 +474,7 @@ class RagService:
                 log.warning("记忆注入失败（忽略，不影响回答）: %s", exc)
 
         ctx = await get_builder().build(
-            question, chunks, history, profile=profile, work=work
+            question, chunks, history, profile=profile, work=work, session_id=session_id
         )
         return ctx.messages, ctx.to_dict()
 
@@ -480,6 +484,16 @@ class RagService:
 
     async def reset(self, session_id: str) -> None:
         self.sessions.reset(session_id)
+        # 会话被重置了，摘要也要一起清：否则新会话第一句就带着旧摘要，
+        # 等于「清了历史但没清记忆」，用户会觉得怎么清都清不干净。
+        if settings.enable_summary_store:
+            try:
+                from ..context.summary_store import get_summary_store
+
+                store = await get_summary_store()
+                await store.delete(session_id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("清理会话摘要失败（忽略）: %s", exc)
 
 
 _service: RagService | None = None

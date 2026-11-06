@@ -21,8 +21,11 @@ data/memory*.db*
 data/actions.db
 data/actions*.db*
 data/memory_demo.db
+data/summaries.db
+data/summaries*.db*
 data/feedback.jsonl
 data/eval/
+data/probe.json
 logs/
 *.log
 

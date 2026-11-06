@@ -43,6 +43,21 @@ SUMMARY_PROMPT = """把下面的历史对话压缩成一段摘要，供后续回
 {history}
 """
 
+MERGE_PROMPT = """把「已有摘要」和「新增摘要」合并成一段更完整的历史摘要。
+
+硬要求：
+- 保留所有事实：人名、部门、系统名、数字、期限，一个都不能丢；
+- 同一件事只留最新的说法（用户改了口，就按新的）；
+- 去重、去客套话，不要出现"用户询问了…"；
+- 不超过 {limit} 字，直接输出合并后的摘要正文。
+
+【已有摘要】
+{old}
+
+【新增摘要】
+{new}
+"""
+
 
 @dataclass
 class Layer:
@@ -93,6 +108,7 @@ class ContextBuilder:
         profile: str = "",
         work: str = "",
         max_tokens: int | None = None,
+        session_id: str | None = None,
     ) -> BuiltContext:
         budget = max_tokens or settings.context_max_tokens
         usable = max(budget - settings.context_output_reserve, 200)
@@ -144,10 +160,16 @@ class ContextBuilder:
 
         summary_text = ""
         if older:
-            summary_text = await self._summarize(older, settings.context_summary_tokens)
+            # 入库后只压「新增轮次」，没有新增就直接复用库里的文本（一次模型都不调）
+            # older 就是 history 的前缀，它的长度即「已压到第几条」
+            summary_text, note = await self._rolling_summary(
+                session_id,
+                history,
+                len(older),
+                settings.context_summary_tokens,
+            )
             compressed = True
-            layers.append(Layer("history.summary", estimate_tokens(summary_text),
-                                note=f"{len(older)} 轮压缩为摘要"))
+            layers.append(Layer("history.summary", estimate_tokens(summary_text), note=note))
 
         # 预算不够时，先砍摘要（它信息密度最低且可重建），再砍更早的原文轮次
         recent_tokens = sum(estimate_tokens(t.get("content", "")) for t in recent)
@@ -184,6 +206,82 @@ class ContextBuilder:
 
         return BuiltContext(messages=messages, tokens=total, budget=budget,
                             layers=layers, trace=trace, compressed=compressed)
+
+    async def _rolling_summary(
+        self,
+        session_id: str | None,
+        history: list[dict[str, str]],
+        older_end: int,
+        limit: int,
+    ) -> tuple[str, str]:
+        """L1 增量摘要 → 与 L2 合并 → 入库。返回 (摘要文本, 可观测性说明)。
+
+        `older_end` 是「需要被压缩的历史」在完整 history 里的结束下标（绝对位置）。
+        用绝对位置而不是相对长度，是因为 recent 窗口会随轮次变化，
+        相对下标会让「压到哪了」在两次请求之间对不上。
+        """
+        store = None
+        if session_id and settings.enable_summary_store:
+            try:
+                from .summary_store import get_summary_store
+
+                store = await get_summary_store()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("摘要库不可用，退化为每次重算: %s", exc)
+
+        prev = None
+        if store:
+            try:
+                prev = await store.get(session_id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("读取历史摘要失败（忽略，按首次摘要处理）: %s", exc)
+
+        covered = int(prev["covered_turns"]) if prev else 0
+        # 会话被裁剪/重置过时 covered 可能越界，夹一下比抛错好
+        covered = max(0, min(covered, older_end))
+        fresh = history[covered:older_end]
+
+        if prev and not fresh:
+            return prev["text"], f"复用已入库摘要（覆盖 {covered} 轮，无新增）"
+
+        new_text = await self._summarize(fresh, limit) if fresh else ""
+        if not new_text:
+            return (prev["text"] if prev else ""), "摘要生成失败，沿用旧摘要"
+
+        if prev:
+            merged = await self._merge(prev["text"], new_text, limit)
+            note = f"L2 滚动摘要：{covered}→{older_end} 轮（本次增量 {len(fresh)} 轮）"
+        else:
+            merged = new_text
+            note = f"L1 首次摘要：{older_end} 轮"
+
+        if store:
+            try:
+                await store.put(
+                    session_id,
+                    older_end,
+                    merged,
+                    max_sessions=settings.context_summary_max_sessions,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("摘要入库失败（不影响本次回答）: %s", exc)
+        return merged, note
+
+    async def _merge(self, old: str, new: str, limit: int) -> str:
+        """把新摘要揉进已有摘要。合并不了就直接拼，绝不因此丢历史。"""
+        if not old:
+            return new
+        prompt = MERGE_PROMPT.format(limit=limit, old=old, new=new)
+        try:
+            text = await self.llm.complete(
+                [{"role": "user", "content": prompt}], temperature=0.0, max_tokens=limit * 2
+            )
+            text = (text or "").strip()
+            if text:
+                return truncate_to_tokens(text, limit)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("摘要合并失败，改为拼接: %s", exc)
+        return truncate_to_tokens(f"{old}；{new}", limit)
 
     async def _summarize(self, turns: list[dict[str, str]], limit: int) -> str:
         """压缩旧历史。LLM 失败时退化为抽取式，保证离线也能跑。"""

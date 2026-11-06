@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 
@@ -68,10 +69,20 @@ def ndcg_at_k(retrieved: list[dict[str, Any]], expected_docs: list[str], k: int)
     return min(1.0, dcg / idcg) if idcg else 0.0
 
 
+def _flat(text: str) -> str:
+    """比对前压平空白与大小写。
+
+    中文答案里「3 个月」和「3个月」是同一个事实，模型加不加空格纯属随机。
+    不做这一步，评分会因为排版抖动，而不是因为答对没答对。
+    """
+    return re.sub(r"[\s\u3000]+", "", text or "").lower()
+
+
 def keyword_coverage(answer: str, must_contain: list[str]) -> float:
     if not must_contain:
         return 1.0
-    hit = sum(1 for kw in must_contain if kw in answer)
+    flat = _flat(answer)
+    hit = sum(1 for kw in must_contain if _flat(kw) in flat)
     return hit / len(must_contain)
 
 

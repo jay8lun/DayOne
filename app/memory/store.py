@@ -165,6 +165,24 @@ class MemoryStore:
 
         return await self._run(op)
 
+    async def purge_owner(self, owner_id: str) -> int:
+        """删除某个 owner 的全部记忆与审计留痕，返回删除行数。
+
+        只给**评测/演示重置**用：端到端评估会反复以同一批 owner 造档案，
+        如果每次都在旧数据上叠加，第二次跑就会出现「上一条用例的导师」，
+        指标会随运行次数漂移。生产链路不会调它。
+        """
+
+        def op(conn: sqlite3.Connection) -> int:
+            deleted = 0
+            for table in ("memory_facts", "work_items", "audit_log"):
+                cur = conn.execute(f"DELETE FROM {table} WHERE owner_id=?", (owner_id,))
+                deleted += cur.rowcount or 0
+            conn.commit()
+            return deleted
+
+        return await self._run(op)
+
     async def facts_by_status(self, status: str) -> list[dict[str, Any]]:
         """跨用户扫某一状态的全部记忆（衰减任务用；量级小，SQLite 足够）。"""
 

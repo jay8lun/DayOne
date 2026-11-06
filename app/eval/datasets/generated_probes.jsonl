@@ -1,0 +1,14 @@
+{"id": "g01", "type": "single", "question": "绩效拿到C会怎么样啊？会被直接开掉吗？", "must_contain": ["PIP"], "expected_docs": ["新人高频问题 FAQ"], "note": "反生成自 关于成长"}
+{"id": "g02", "type": "single", "question": "大佬们，刚入职第一年到底有没有年假啊？听人说好像得满一年才有？", "must_contain": ["5 天", "满 1 年"], "expected_docs": ["新人高频问题 FAQ"], "note": "反生成自 关于钱和假"}
+{"id": "g03", "type": "single", "question": "我刚入职，想申请个管理员权限方便干活，会被批吗？", "must_contain": ["会被系统 owner 驳回"], "expected_docs": ["账号、权限与数据安全"], "note": "反生成自 权限最小化原则"}
+{"id": "g04", "type": "single", "question": "兄弟们问一下，我本地开发.env文件是不是得加到.gitignore里啊？还有万一密钥真提交上去了该咋办？", "must_contain": [".gitignore"], "expected_docs": ["账号、权限与数据安全"], "note": "反生成自 密钥管理"}
+{"id": "g05", "type": "single", "question": "回滚完在群里同步有时间要求吗？一般发什么内容？", "must_contain": ["30 分钟"], "expected_docs": ["发布上线与故障响应 SOP"], "note": "反生成自 回滚"}
+{"id": "g06", "type": "single", "question": "请问 P0 故障的复盘文档要多久交啊？是不是在群里发一下就好了？", "must_contain": ["3 个工作日"], "expected_docs": ["发布上线与故障响应 SOP"], "note": "反生成自 故障处理五步"}
+{"id": "g07", "type": "single", "question": "我要是忘打卡了咋办啊，一个月能补几次？", "must_contain": ["3次"], "expected_docs": ["考勤、请假与远程办公"], "note": "反生成自 打卡"}
+{"id": "g08", "type": "single", "question": "各位好，我想问下年假入职第一年能休几天呀？还有要是今年没休完能留到明年吗？", "must_contain": ["满1年5天", "结转5天到次年3月31日"], "expected_docs": ["考勤、请假与远程办公"], "note": "反生成自 请假类型与规则"}
+{"id": "g09", "type": "single", "question": "请问一下代码格式和 lint 用哪个工具啊，行宽有要求吗？还有公共函数要不要写注释？", "must_contain": ["ruff", "100"], "expected_docs": ["研发流程与代码规范"], "note": "反生成自 代码规范要点（Python）"}
+{"id": "g10", "type": "single", "question": "我刚拉了个 feature 分支，大概多久得合掉啊？另外超过几天得每天 rebase develop？", "must_contain": ["5 个工作日", "3 天"], "expected_docs": ["研发流程与代码规范"], "note": "反生成自 分支模型"}
+{"id": "g11", "type": "single", "question": "请问试用期一般是几个月啊？转正答辩要讲多久？", "must_contain": ["3 个月", "20 分钟"], "expected_docs": ["导师制与学习资源"], "note": "反生成自 试用期与转正"}
+{"id": "g12", "type": "single", "question": "咱们公司组织架构在哪个系统能查啊？发现我的汇报关系不对该找谁改？", "must_contain": ["HRBP"], "expected_docs": ["组织架构与找人指南"], "note": "反生成自 汇报关系怎么查"}
+{"id": "g13", "type": "single", "question": "问一下，我新建一个 skill 目录的时候，哪些文件夹是必须建的啊？SKILL.md 我知道要，别的呢？", "must_contain": ["scripts/", "SKILL.md"], "expected_docs": ["Skill 开发与上架规范"], "note": "反生成自 Skill 的最小结构"}
+{"id": "g14", "type": "single", "question": "那个挂载调试的命令是不是要先把 skill_id 建出来啊？我本地直接跑 dev 行不行？", "must_contain": ["skill_id", "SkillHub"], "expected_docs": ["Skill 开发与上架规范"], "note": "反生成自 开发流程"}
