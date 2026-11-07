@@ -89,7 +89,22 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         log.error("记忆库初始化失败（服务继续启动）: %s", exc)
 
-    # 5) 动作库（待确认操作 / 工单）。和记忆库分开：生命周期与清理策略不同
+    # 5) 会话后端（Redis / 进程内）。多副本部署时这里必须是 Redis，
+    #    否则同一用户的追问会落到没有历史的进程上
+    try:
+        from .rag.sessions import session_store
+
+        sess_stats = session_store.stats()
+        BOOT_INFO["sessions"] = sess_stats
+        log.info(
+            "会话后端: %s | 现有会话 %d",
+            sess_stats.get("backend", "memory"),
+            sess_stats.get("sessions", 0),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error("会话后端初始化异常（仍可用进程内会话）: %s", exc)
+
+    # 6) 动作库（待确认操作 / 工单）。和记忆库分开：生命周期与清理策略不同
     try:
         from .tools.actions import get_action_store
 
@@ -103,6 +118,12 @@ async def lifespan(app: FastAPI):
     log.info("服务就绪 | LLM=%s", BOOT_INFO["llm"])
     yield
 
+    try:
+        from .rag.sessions import session_store
+
+        session_store.close()
+    except Exception:  # noqa: BLE001
+        pass
     log.info("服务关闭")
 
 

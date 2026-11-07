@@ -13,6 +13,11 @@ services:
       CHROMA_DIR: /app/data/chroma
       KB_LOCAL_PATH: /app/data/corpus
       INGEST_STATE_FILE: /app/data/state/ingest_state.json
+      # .env 里的 REDIS_URL 是宿主机视角，容器里必须用服务名
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       # 向量库与入库状态持久化，重启不用重跑 embedding
       - rag-data:/app/data/chroma
@@ -26,6 +31,29 @@ services:
       retries: 3
       start_period: 40s
 
+  # 会话外置：多副本 / 滚动发布时，追问不能落到没有历史的进程上
+  redis:
+    image: redis:7-alpine
+    container_name: dayone-redis
+    restart: unless-stopped
+    # appendonly 保证重启不丢会话；内存上限 + LRU 防止无关键把内存吃满
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   rag-data:
   rag-state:
+  redis-data:

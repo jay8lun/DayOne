@@ -19,12 +19,18 @@ chromadb==1.5.9
 numpy==2.5.4
 tiktoken==0.14.0
 
+# ---------- 会话外置（多副本 / 重启不丢追问） ----------
+# 不装也能跑：会自动回退到进程内会话
+redis==8.1.0
+
 # ---------- 文档解析（适配器用） ----------
 pdfplumber==0.11.4
 python-docx==1.1.2
 
 # ---------- 开发 / 测试 ----------
 pytest==9.1.1
+# 不连真 Redis 也能验证会话后端（scripts/check_redis.py --fake）
+fakeredis==2.40.0
 
 # ---------- 可选：本地 embedding（不装则用 hashing 兜底） ----------
 # sentence-transformers==3.3.1

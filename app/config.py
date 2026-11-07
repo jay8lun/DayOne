@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     # ---------- 会话 ----------
     max_history_turns: int = 6
     session_ttl_minutes: int = 120
+    # 会话后端：auto（配了 REDIS_URL 就用 Redis）/ memory / redis
+    # 多副本或滚动发布时必须用 Redis，否则追问会落到没有历史的进程上
+    session_backend: str = "auto"
+    redis_url: str = ""
+    session_redis_prefix: str = "dayone:sess:"
 
     # ---------- 记忆（长期，跨会话） ----------
     memory_db_path: str = "data/memory.db"

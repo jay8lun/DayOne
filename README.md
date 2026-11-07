@@ -239,7 +239,7 @@ condense → retrieve → grade ─┬─ 足够 ──────────�
 
 | 层 | 存什么 | 存哪 | 生命周期 |
 | --- | --- | --- | --- |
-| 短期 | 本会话最近 N 轮 | `sessions.py` 进程内（生产换 Redis） | 会话结束 / TTL |
+| 短期 | 本会话最近 N 轮 | `sessions.py`：Redis（配了 `REDIS_URL`）或进程内 | 会话结束 / TTL |
 | 工作记忆 | 流程第几步、材料交了几项 | SQLite `work_items` | 流程结束 |
 | 长期事实 | 部门、导师、工位 | SQLite `memory_facts`（双时间轴） | 长期，带有效期 |
 | 长期偏好 | 回答风格、常用系统 | 同上（`kind=preference`） | 慢衰减 |
@@ -469,6 +469,43 @@ data/summaries.db  ← 下次没有新增就直接复用，一次模型都不调
 实测 8 轮对话：第 4 轮 `L1 首次摘要：2 轮` → 第 5—7 轮 `L2 滚动摘要：2→4 / 4→6 / 6→8 轮` →
 第 8 轮 `复用已入库摘要（覆盖 8 轮，无新增）`。会话重置时摘要一起清掉，不会「清了历史还带着旧摘要」。
 
+### 会话外置：为什么多副本就必须上 Redis
+
+摘要解决的是「历史太长」，会话存储解决的是「历史存在哪」。进程内 dict 在单副本够用，
+但这三种情况会直接坏掉：
+
+- **多副本 / 滚动发布**：第 2 句落到另一个进程，「那其他城市呢」就变成一句没有上下文的新问题；
+- **重启**：会话全丢，用户得从头讲；
+- **扩容**：副本越多，命中同一进程的概率越低，追问体验越随机。
+
+这不是性能问题，是**正确性**问题。所以 `app/rag/sessions.py` 加了 Redis 实现，
+填了 `REDIS_URL` 就自动启用，不填照旧走内存（功能一样，只是重启会丢）：
+
+```bash
+# 方式一：docker compose（redis 服务已配好，含 appendonly 持久化）
+docker compose up -d redis
+
+# 方式二：已有 Redis，直接填 .env
+REDIS_URL=redis://127.0.0.1:6379/0
+SESSION_BACKEND=auto        # auto | memory | redis
+
+# 部署前自检：连通 / 读写顺序 / TTL / 多实例共享，四项全过才返回 0
+python scripts/check_redis.py
+```
+
+**为什么用 List 而不是 String(JSON)**：String 方案每次都是「读出来 → 改 → 写回」，
+两个请求同时追加会互相覆盖（丢一条消息），而且历史越长越慢。
+List 用 `LPUSH + LTRIM + EXPIRE` 一条 pipeline 完成，全是 O(1)，没有读-改-写就没有丢更新。
+
+**降级不做假**：Redis 连不上时自动回落进程内，但会打 warning 并**熔断 30 秒**——
+否则每个请求都要等一次连接超时，一个挂掉的 Redis 能把整个服务拖慢。
+故障期间的历史会短暂分叉（故障前在 Redis、故障中在内存），这是刻意取舍：
+宁可体验降级，也不要整个问答不可用。
+
+实测（本机 TCP 版 Redis）：写入一轮会话后**重启服务**，`boot.sessions` 显示
+`{'sessions': 1, 'backend': 'redis'}`，同一 `session_id` 追问「那其他城市呢？」
+被正确改写成「其他城市的出差住宿标准按职级如何划分？」并答出 350/450/600 元。
+
 ---
 
 ## 7. 接口一览
@@ -569,7 +606,7 @@ DayOne/
 │   ├── 评估报告_反生成.md        # 反生成问句集（14 条）
 │   ├── 探针报告.md              # 13 条闭环探针
 │   └── 调优记录.md              # 每轮踩坑的 before/after
-├── scripts/                    # ingest / evaluate / probe / gen_questions / tune / ask
+├── scripts/                    # ingest / evaluate / probe / gen_questions / check_redis / tune / ask
 ├── tests/                      # 108 个测试（单测 + 接口冒烟 + 评测逻辑）
 ├── Dockerfile · docker-compose.yml
 ├── requirements.txt · .env.example
@@ -595,13 +632,13 @@ DayOne/
 - **编排端到端评测**（16 条用例：剧本命中 / 步骤顺序 / 该不该代办 / 误编排率；含 4 条负例）
 - **探针问句反生成**（从原文生成问题 + 原文反查筛幻觉，14 条实测报告）
 - **多级摘要入库**（L1 段摘要 → L2 滚动摘要 → SQLite；无新增轮次不调模型，会话重置同步清理）
+- **会话外置**（Redis List + TTL：多副本共享、重启不丢追问；连不上自动回退进程内并熔断 30s）
 - **闭环探针**（13 条：跨天保留 / 冲突 / 遗忘 / 隔离 / 写操作幂等 / 编排串接 / 压缩不吞证据，附报告）
-- 拒答兜底、SSE 流式、离线降级、Docker 化、评估脚本与 108 个测试
+- 拒答兜底、SSE 流式、离线降级、Docker 化（含 Redis 服务）、评估脚本与 119 个测试
 
 **没做（有意为之，避免过度设计）**
 
 - 用户体系与权限隔离（当前是内网单租户；接企微可拿 userid 做过滤）
-- 会话持久化（内存 + TTL，多副本需换 Redis，`sessions.py` 已按 kv 抽象）
 - 向量库分布式（Chroma 单机够用；上量换 pgvector / Milvus，只改 `store.py`）
 - 定时增量同步（现在靠脚本/接口触发；接 cron 或 APScheduler 即可）
 
