@@ -16,7 +16,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .adapters.registry import available_adapters, build_adapters, load_plugins
-from .api import routes_actions, routes_chat, routes_eval, routes_kb, routes_memory
+from .api import (
+    routes_actions,
+    routes_cache,
+    routes_chat,
+    routes_eval,
+    routes_kb,
+    routes_memory,
+)
 from .config import BASE_DIR, settings
 from .core.errors import AppError
 from .core.logging import get_logger, setup_logging
@@ -104,7 +111,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         log.error("会话后端初始化异常（仍可用进程内会话）: %s", exc)
 
-    # 6) 动作库（待确认操作 / 工单）。和记忆库分开：生命周期与清理策略不同
+    # 6) 答案缓存（Redis）。连不上就用进程内那层，功能一致、只是不跨副本
+    try:
+        from .rag.cache import get_answer_cache
+
+        cache = get_answer_cache()
+        BOOT_INFO["cache"] = cache.stats()
+        log.info("答案缓存: %s | ttl=%ds", cache.backend, cache.ttl)
+    except Exception as exc:  # noqa: BLE001
+        log.error("答案缓存初始化异常（问答照常，只是不快）: %s", exc)
+
+    # 7) 动作库（待确认操作 / 工单）。和记忆库分开：生命周期与清理策略不同
     try:
         from .tools.actions import get_action_store
 
@@ -172,6 +189,7 @@ app.include_router(routes_kb.router)
 app.include_router(routes_eval.router)
 app.include_router(routes_memory.router)
 app.include_router(routes_actions.router)
+app.include_router(routes_cache.router)
 
 
 @app.get("/api/health", tags=["ops"], summary="健康检查（含当前模型与知识库状态）")
@@ -199,8 +217,19 @@ async def health() -> dict:
             "source": settings.kb_source,
         },
         "adapters": available_adapters(),
+        # 命中率是实时值：启动快照看不出跑了一段时间后的效果
+        "cache": _cache_stats(),
         "boot": BOOT_INFO,
     }
+
+
+def _cache_stats() -> dict:
+    try:
+        from .rag.cache import get_answer_cache
+
+        return get_answer_cache().stats()
+    except Exception:  # noqa: BLE001
+        return {"backend": "unknown", "enabled": False}
 
 
 # ---------------- 前端 ----------------

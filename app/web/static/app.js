@@ -172,6 +172,11 @@ function renderSources(sources, meta) {
       ? []
       : [`置信度 ${(meta.confidence ?? 0).toFixed(2)}`,
          `覆盖度 ${(meta.coverage ?? 0).toFixed(2)}`];
+    // 命中缓存必须说出来：否则用户以为这是刚查的，知识库改了也不知道
+    if (meta.cached) {
+      const age = typeof meta.cache_age_s === 'number' ? ` · ${meta.cache_age_s}s 前生成` : '';
+      chips.unshift(`来自缓存${age}`);
+    }
     if (meta.standalone_query) chips.push(`检索用问题：${meta.standalone_query}`);
     metaEl.innerHTML = chips.map((c) => `<span>${esc(c)}</span>`).join('');
   }
@@ -184,7 +189,9 @@ function renderSources(sources, meta) {
         ? '这次由你的入职档案作答，没有检索文档。'
         : src === 'orchestrated'
           ? '这次任务只用到档案与系统数据，没有引用文档。'
-          : '这次没有召回到相关文档。';
+          : src === 'cache'
+            ? '这次命中的是此前的答案（知识库未变更），原始回答未引用文档。'
+            : '这次没有召回到相关文档。';
     metaEl.innerHTML = '';
     sourcesEl.innerHTML = `<div class="empty"><p>${esc(why)}</p></div>`;
     return;

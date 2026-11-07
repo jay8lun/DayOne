@@ -17,6 +17,7 @@ from ..config import settings
 from ..core.errors import LLMError
 from ..core.logging import get_logger
 from ..memory import get_memory
+from .cache import get_answer_cache
 from .citations import build_sources, verify_and_attach
 from .graph import build_rag_graph
 from .llm import BaseLLM, content_terms, get_llm
@@ -78,8 +79,12 @@ class RagService:
         return await self.retriever.refresh_index(force=True)
 
     # ---------- 检索阶段 ----------
-    async def prepare(self, question: str, session_id: str | None) -> dict[str, Any]:
-        history = self.sessions.history(session_id)
+    async def prepare(
+        self, question: str, session_id: str | None, *, history: list[dict[str, str]] | None = None
+    ) -> dict[str, Any]:
+        # history 允许外部传进来：缓存判断也要用它，读两次 Redis 没必要
+        if history is None:
+            history = self.sessions.history(session_id)
         state = await self.graph.ainvoke(
             {"question": question, "history": history, "trace": []}
         )
@@ -115,6 +120,8 @@ class RagService:
             "trace": prep["trace"],
             "context": {},
             "answer_source": "knowledge_base",
+            "cached": False,
+            "cache_age_s": 0,
             "llm": {"provider": self.llm.provider, "model": self.llm.model},
             "latency_ms": 0,
         }
@@ -132,6 +139,18 @@ class RagService:
         if orchestrated:
             return orchestrated
 
+        # 缓存必须在「记忆 / 工具路由」之前查：那两步里的意图识别要调一次模型（约 2s），
+        # 命中缓存却还要等 2 秒，缓存就白做了。
+        # 这样做安全的前提是「记忆 / 工具 / 编排的答案从不写入缓存」——能命中，
+        # 就说明这个问题上一次是以纯文档问答结束的，不存在「绕开工具」的错。
+        history = self.sessions.history(session_id)
+        cacheable = self._cacheable(history)
+        if cacheable:
+            hit = get_answer_cache().get(question)
+            if hit:
+                log.info("答案缓存命中 | %s", question[:30])
+                return self._payload_from_cache(session_id, question, hit, t0)
+
         # 先判「是不是在问我本人」。必须在检索**之前**判：
         # 一旦走了改写+检索，历史上下文会把「我的进度」改写成制度问题，档案就被绕过去了。
         early = await self._memory_answer(session_id, question, owner_id, t0)
@@ -142,7 +161,7 @@ class RagService:
         if tool_payload:
             return tool_payload
 
-        prep = await self.prepare(question, session_id)
+        prep = await self.prepare(question, session_id, history=history)
 
         if not prep["sufficient"]:
             payload = self._base_payload(session_id, question, prep)
@@ -156,6 +175,7 @@ class RagService:
                 }
             )
             self._remember(session_id, question, REFUSAL_TEXT)
+            self._cache_store(question, payload, cacheable)
             return payload
 
         messages, ctx_info = await self._compose(
@@ -170,6 +190,7 @@ class RagService:
         payload["context"] = ctx_info
         payload["latency_ms"] = int((time.perf_counter() - t0) * 1000)
         self._remember(session_id, question, payload["answer_plain"])
+        self._cache_store(question, payload, cacheable)
         return payload
 
     # ---------- 流式问答 ----------
@@ -191,6 +212,31 @@ class RagService:
                     yield {"type": "delta", "text": answer[i : i + 12]}
                 yield {"type": "done", **orchestrated}
                 return
+
+            # 同 ask：缓存放在记忆/工具路由之前，省掉那一次意图识别模型调用
+            history = self.sessions.history(session_id)
+            cacheable = self._cacheable(history)
+            if cacheable:
+                hit = get_answer_cache().get(question)
+                if hit:
+                    log.info("答案缓存命中（流式） | %s", question[:30])
+                    payload = self._payload_from_cache(session_id, question, hit, t0)
+                    yield {"type": "status", "stage": "cache",
+                           "message": "命中缓存（知识库未变更，直接复用上次答案）"}
+                    yield {
+                        "type": "sources",
+                        "sources": payload["sources"],
+                        "confidence": payload["confidence"],
+                        "coverage": payload["coverage"],
+                        "standalone_query": payload["standalone_query"],
+                        "sufficient": not payload["refused"],
+                        "trace": payload["trace"],
+                    }
+                    answer = payload["answer"]
+                    for i in range(0, len(answer), 12):
+                        yield {"type": "delta", "text": answer[i : i + 12]}
+                    yield {"type": "done", **payload}
+                    return
 
             early_memory = await self._memory_blocks(owner_id)
             if early_memory and memory_covers(question, early_memory["text"]):
@@ -217,7 +263,7 @@ class RagService:
                 return
 
             yield {"type": "status", "stage": "retrieving", "message": "正在检索知识库…"}
-            prep = await self.prepare(question, session_id)
+            prep = await self.prepare(question, session_id, history=history)
             yield {
                 "type": "sources",
                 "sources": prep["sources"],
@@ -242,6 +288,7 @@ class RagService:
                 )
                 self._remember(session_id, question, REFUSAL_TEXT)
                 payload["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+                self._cache_store(question, payload, cacheable)
                 yield {"type": "done", **payload}
                 return
 
@@ -261,6 +308,7 @@ class RagService:
             payload["context"] = ctx_info
             payload["latency_ms"] = int((time.perf_counter() - t0) * 1000)
             self._remember(session_id, question, payload["answer_plain"])
+            self._cache_store(question, payload, cacheable)
             yield {"type": "done", **payload}
         except LLMError as exc:
             log.error("问答失败: %s", exc)
@@ -477,6 +525,75 @@ class RagService:
             question, chunks, history, profile=profile, work=work, session_id=session_id
         )
         return ctx.messages, ctx.to_dict()
+
+    # ---------- 答案缓存 ----------
+    def _cacheable(self, history: list[dict[str, str]]) -> bool:
+        """只有「第一轮」的问题可缓存。
+
+        追问的语义依赖上文——同一句「那其他城市呢」在不同会话里指向完全不同的
+        制度，拿它当缓存 key 必然串答案。第一轮的问句自包含，才安全。
+        """
+        return settings.cache_enabled and not history
+
+    def _cache_store(self, question: str, payload: dict[str, Any], cacheable: bool) -> None:
+        if not cacheable:
+            return
+        # 再挡一层：编排 / 记忆 / 工具路径的答案依赖提问者本人的档案与工单，
+        # 属于「某个人的上下文」，不能跨会话共享。
+        if payload.get("answer_source") != "knowledge_base":
+            return
+        get_answer_cache().set(
+            question,
+            {
+                "answer": payload.get("answer", ""),
+                "answer_plain": payload.get("answer_plain", ""),
+                "refused": bool(payload.get("refused")),
+                "sources": payload.get("sources") or [],
+                "citations": payload.get("citations") or [],
+                "grounding_score": payload.get("grounding_score", 0.0),
+                "citation_precision": payload.get("citation_precision", 0.0),
+                "confidence": payload.get("confidence", 0.0),
+                "coverage": payload.get("coverage", 0.0),
+                "standalone_query": payload.get("standalone_query", question),
+                "retrieval": payload.get("retrieval") or {},
+                "trace": payload.get("trace") or [],
+                "_cached_at": time.time(),
+            },
+        )
+
+    def _payload_from_cache(
+        self, session_id: str, question: str, hit: dict[str, Any], t0: float
+    ) -> dict[str, Any]:
+        """把缓存条目还原成和正常回答完全一致的 payload。
+
+        字段必须对齐，否则前端渲染会少一块（引用角标、有据率都靠这些字段）。
+        """
+        prep = {
+            "standalone_query": hit.get("standalone_query") or question,
+            "confidence": hit.get("confidence", 0.0),
+            "coverage": hit.get("coverage", 0.0),
+            "retrieval": hit.get("retrieval") or {"mode": "cache"},
+            "trace": ["cache: 命中（知识库指纹未变，复用上次答案）"],
+        }
+        payload = self._base_payload(session_id, question, prep)
+        for field in (
+            "answer",
+            "answer_plain",
+            "refused",
+            "sources",
+            "citations",
+            "grounding_score",
+            "citation_precision",
+        ):
+            if field in hit:
+                payload[field] = hit[field]
+        payload["answer_source"] = "cache"
+        payload["cached"] = True
+        payload["cache_age_s"] = max(0, int(time.time() - float(hit.get("_cached_at") or 0)))
+        payload["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+        # 命中也要写会话历史：否则这一轮不进上下文，下一句追问就断链了
+        self._remember(session_id, question, payload["answer_plain"])
+        return payload
 
     def _remember(self, session_id: str, question: str, answer: str) -> None:
         self.sessions.append(session_id, "user", question)

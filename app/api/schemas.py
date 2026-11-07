@@ -51,7 +51,12 @@ class ChatResponse(BaseModel):
     llm: dict[str, str] = {}
     latency_ms: int = 0
     context: dict[str, Any] = Field(default_factory=dict, description="上下文预算去向（可观测）")
-    answer_source: str = Field("knowledge_base", description="答案来源：knowledge_base | memory | tool")
+    answer_source: str = Field(
+        "knowledge_base",
+        description="答案来源：knowledge_base | memory | tool | orchestrated | cache",
+    )
+    cached: bool = Field(False, description="是否命中答案缓存（知识库未变更，未重新检索生成）")
+    cache_age_s: int = Field(0, description="缓存条目距今多少秒（命中时才有意义）")
     tool: dict[str, Any] = Field(default_factory=dict, description="本次调用到的工具（名称/参数/是否成功）")
     requires_confirmation: bool = Field(False, description="写操作：已生成待确认操作，尚未执行")
     pending_action: dict[str, Any] = Field(default_factory=dict,

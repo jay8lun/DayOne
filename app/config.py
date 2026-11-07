@@ -120,6 +120,14 @@ class Settings(BaseSettings):
     # chdir，项目路径里带中文（如 学习日志）会直接启动失败。留空则自动挑一个 ASCII 目录。
     redis_run_dir: str = ""
 
+    # ---------- 答案缓存（Redis，命中即省一次检索 + 一次生成） ----------
+    # 只缓存「第一轮 + 纯文档问答」：追问依赖上下文、编排依赖个人档案，都不能复用
+    cache_enabled: bool = True
+    cache_ttl_seconds: int = 600
+    cache_redis_prefix: str = "dayone:ans:"
+    # 超过这个体积不入缓存：大答案的序列化/传输成本不比重新生成低
+    cache_max_bytes: int = 64 * 1024
+
     # ---------- 记忆（长期，跨会话） ----------
     memory_db_path: str = "data/memory.db"
     # 写入闸门：LLM 抽取的候选低于该置信度只进 pending，不覆盖已有事实
