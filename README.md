@@ -76,14 +76,46 @@ cp .env.example .env        # 然后按需填 LLM_API_KEY
 # 2) 入库（首次会自动执行，也可手动跑）
 D:/kai_study/.venv/Scripts/python.exe scripts/ingest.py
 
-# 3) 起服务
-D:/kai_study/.venv/Scripts/python.exe -m uvicorn app.main:app --port 8000
+# 3) 一键启动：Redis 没跑会先拉起来，再起 Web 服务
+D:/kai_study/.venv/Scripts/python.exe scripts/start.py
 ```
 
 打开 <http://127.0.0.1:8000> 就是聊天界面；接口文档在 <http://127.0.0.1:8000/docs>。
 
 > 本项目已针对 `D:\kai_study\.venv` 验证（Python 3.12），`requirements.txt` 里的版本与该环境一致，
 > 直接复用现有环境即可，不需要 `pip install -r requirements.txt`。
+
+#### `scripts/start.py` 做了什么
+
+比起裸跑 uvicorn，它多三步：**探测 Redis → 没跑就拉起来 → 再起服务**，另外把
+「配置了什么、实际连上了什么」在启动时就说清楚，省得对着 500 猜半天。
+
+```bash
+python scripts/start.py              # 常规：Redis 没跑就拉起，然后起服务
+python scripts/start.py --memory     # 不用 Redis，进程内会话（重启丢历史）
+python scripts/start.py --redis-only # 只拉 Redis（脱离终端常驻）
+python scripts/start.py --detach-redis # Redis 常驻，Web 停了也不退
+python scripts/start.py --check      # 只体检：探活 + 找可执行文件 + 打印数据目录
+python scripts/start.py --stop-redis # 关掉 Redis（先落盘再退）
+python scripts/start.py --reload     # 开发热重载
+```
+
+三个刻意的设计：
+
+1. **只有脚本会拉进程，`app/` 里不写自启。** 生产（compose / k8s）里进程归编排层管，
+   应用去拉进程会制造孤儿进程、也没法做健康检查。
+2. **默认与项目同生命周期。** 脚本拉起 Redis → 起服务 → `Ctrl+C` 时先 `SHUTDOWN SAVE`
+   再退出，端口和进程一起收干净。这个项目的 Redis 只服务「开着项目看效果」一个场景，
+   不需要常驻；真要常驻加 `--detach-redis`（Windows `DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB`，
+   POSIX `start_new_session`）。
+   **用户原本就开着的 Redis 不归脚本管**——只关自己拉起来的那个。
+3. **拉不起来不硬撑。** `SESSION_BACKEND=auto` 时自动回退进程内会话（功能正常，重启丢上下文）；
+   `SESSION_BACKEND=redis` 时直接退出，避免「以为在用 Redis，其实在用内存」。
+
+> **路径必须是纯 ASCII**：Windows 版 Redis 用 ANSI API 做 `chdir`，
+> 数据目录里带中文会直接失败 `Can't chdir ... Illegal byte sequence`。
+> 所以自动拉起的 `dir` 默认落在 `redis-server.exe` 同级的 `dayone/`，而不是项目内的 `data/`——
+> 本项目路径含 `学习日志`，放项目里会起不来。想换位置就设 `REDIS_RUN_DIR=D:/redis-data`。
 
 ### 3.2 Docker
 

@@ -106,6 +106,20 @@ class Settings(BaseSettings):
     redis_url: str = ""
     session_redis_prefix: str = "dayone:sess:"
 
+    # ---------- 本地开发便利：按需拉起 Redis ----------
+    # 只有 scripts/start.py 会读这几项；服务本身不拉进程（应用不该管理外部依赖）。
+    # 生产 / 容器里应当交给 docker compose / k8s，不要靠应用自启。
+    redis_autostart: bool = True
+    # redis-server 可执行文件；留空则按 PATH → 常见安装目录 → 环境变量自动找
+    redis_server_bin: str = ""
+    # 基础配置文件；留空则找同目录下的 redis.windows.conf
+    redis_server_conf: str = ""
+    # 启动时临时配置里打开 AOF：RDB 默认 60s/万次变更才落盘，重启会丢刚写的会话
+    redis_aof: bool = True
+    # Redis 的 dir / 日志目录。**必须是纯 ASCII 路径**：Windows 版 Redis 用 ANSI API 做
+    # chdir，项目路径里带中文（如 学习日志）会直接启动失败。留空则自动挑一个 ASCII 目录。
+    redis_run_dir: str = ""
+
     # ---------- 记忆（长期，跨会话） ----------
     memory_db_path: str = "data/memory.db"
     # 写入闸门：LLM 抽取的候选低于该置信度只进 pending，不覆盖已有事实
