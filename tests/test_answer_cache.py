@@ -97,6 +97,7 @@ def test_kb_version_tracks_state_file(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(settings, "ingest_state_file", str(state))
+    monkeypatch.setattr(cachemod, "_embedder_tag", lambda: "fixed-tag")
     monkeypatch.setattr(cachemod, "_KB_CACHE", None)
 
     v1 = kb_version()
@@ -108,6 +109,25 @@ def test_kb_version_tracks_state_file(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     assert kb_version() != v1
+
+
+def test_kb_version_includes_embedder_tag(tmp_path, monkeypatch):
+    """换 embedding 模型也必须让缓存失效。
+
+    换模型会建一个新集合，但文档内容哈希一个都没变——只按内容算指纹的话，
+    旧缓存会继续命中「用旧模型检索出来」的答案，不报错也不告警。
+    这是本项目真实修过的一个静默 bug。
+    """
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"documents": {"a": {"hash": "aaa"}}}), encoding="utf-8")
+    monkeypatch.setattr(settings, "ingest_state_file", str(state))
+
+    monkeypatch.setattr(cachemod, "_embedder_tag", lambda: "dashscope__text-embedding-v3__1024")
+    monkeypatch.setattr(cachemod, "_KB_CACHE", None)
+    before = kb_version()
+
+    monkeypatch.setattr(cachemod, "_embedder_tag", lambda: "local__bge-m3__1024")
+    assert kb_version() != before
 
 
 # --------------------------------------------------------------------------- #

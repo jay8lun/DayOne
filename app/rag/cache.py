@@ -35,12 +35,28 @@ from ..core.logging import get_logger
 log = get_logger(__name__)
 
 # KB 指纹 + key 计算是每个请求都要做的，用 mtime 判断是否要重新读状态文件
-_KB_CACHE: tuple[tuple[int, int], str] | None = None
+_KB_CACHE: tuple[tuple[int, int, str], str] | None = None
 _DOWN_BACKOFF_SECONDS = 30.0
 
 
+def _embedder_tag() -> str:
+    """当前 embedding 模型的指纹（`provider__model__dim`），和向量集合名用的是同一个。
+
+    **换模型必须让缓存失效**：换 embedding 会建一个新集合，但文档内容哈希一个都没变，
+    只按内容算指纹的话，旧缓存会继续命中「用旧模型检索出来」的答案——
+    不报错、不告警，看起来完全正常。这类静默错误比崩溃危险。
+    """
+    try:
+        from ..ingest.embedder import get_embedder
+
+        return get_embedder().tag
+    except Exception as exc:  # noqa: BLE001 —— 拿不到指纹不该让问答挂掉
+        log.debug("拿不到 embedding 指纹，缓存按内容失效: %s", exc)
+        return "unknown"
+
+
 def kb_version() -> str:
-    """知识库指纹：所有文档内容哈希排序后聚合。
+    """知识库指纹：文档内容哈希 + embedding 模型指纹，聚合后取前 10 位。
 
     只 stat 一次文件（纳秒级），内容没变就直接用上次结果——不解析 JSON。
     """
@@ -51,14 +67,16 @@ def kb_version() -> str:
     except OSError:
         return "nokb"
 
-    stamp = (st.st_mtime_ns, st.st_size)
+    # 先确认有知识库再取模型指纹：没知识库时不必初始化 embedder
+    tag = _embedder_tag()
+    stamp = (st.st_mtime_ns, st.st_size, tag)
     if _KB_CACHE and _KB_CACHE[0] == stamp:
         return _KB_CACHE[1]
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         hashes = sorted(str(d.get("hash") or "") for d in (data.get("documents") or {}).values())
-        version = hashlib.sha1("|".join(hashes).encode()).hexdigest()[:10]
+        version = hashlib.sha1(("|".join(hashes) + "|" + tag).encode()).hexdigest()[:10]
     except Exception:  # noqa: BLE001 —— 状态文件坏了不该让问答挂掉
         version = "unparsed"
     _KB_CACHE = (stamp, version)
