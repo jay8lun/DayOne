@@ -238,6 +238,10 @@ def _make_client(url: str) -> Any:
     return redis.Redis.from_url(
         url,
         decode_responses=True,
+        # 显式用 RESP2：redis-py 8.x 默认 RESP3（先发 HELLO 3 握手），
+        # 而 Redis 5.x（Windows 移植版、不少老生产环境）没有 HELLO 命令，
+        # 会直接报 "unknown command `HELLO`"。我们只用到 List/TTL，RESP2 完全够。
+        protocol=2,
         socket_timeout=0.5,
         socket_connect_timeout=0.5,
         health_check_interval=30,

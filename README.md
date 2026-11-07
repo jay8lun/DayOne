@@ -489,9 +489,17 @@ docker compose up -d redis
 REDIS_URL=redis://127.0.0.1:6379/0
 SESSION_BACKEND=auto        # auto | memory | redis
 
+# 方式三：Windows 免安装版（本机验证用的就是这个，D:\Redis）
+#   redis-server.exe redis.windows.conf
+#   想开机自启（需管理员）：redis-server.exe --service-install redis.windows-service.conf
+
 # 部署前自检：连通 / 读写顺序 / TTL / 多实例共享，四项全过才返回 0
 python scripts/check_redis.py
 ```
+
+> **Windows 注意**：官方没有 Windows 原生版，用社区移植的 `tporadowski/redis`（5.0.14）
+> 或 Memurai。Redis 5.x 没有 `HELLO` 命令，所以客户端显式用 RESP2（`protocol=2`）——
+> redis-py 8.x 默认 RESP3，不指定会直接报 `unknown command 'HELLO'`。
 
 **为什么用 List 而不是 String(JSON)**：String 方案每次都是「读出来 → 改 → 写回」，
 两个请求同时追加会互相覆盖（丢一条消息），而且历史越长越慢。
@@ -502,9 +510,10 @@ List 用 `LPUSH + LTRIM + EXPIRE` 一条 pipeline 完成，全是 O(1)，没有�
 故障期间的历史会短暂分叉（故障前在 Redis、故障中在内存），这是刻意取舍：
 宁可体验降级，也不要整个问答不可用。
 
-实测（本机 TCP 版 Redis）：写入一轮会话后**重启服务**，`boot.sessions` 显示
-`{'sessions': 1, 'backend': 'redis'}`，同一 `session_id` 追问「那其他城市呢？」
-被正确改写成「其他城市的出差住宿标准按职级如何划分？」并答出 350/450/600 元。
+实测（本机 Redis 5.0.14.1）：写入一轮会话后**重启服务**，`boot.sessions` 显示
+`{'sessions': 2, 'backend': 'redis'}`，同一 `session_id` 追问「那其他城市呢？」
+被正确改写成「其他城市的住宿标准是多少？」并答出 350/450/600 元。
+`redis-cli keys 'dayone:sess:*'` 能看到键，`TTL` 是 7200 秒。
 
 ---
 

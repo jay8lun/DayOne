@@ -32,11 +32,16 @@ def _client(url: str, fake: bool):
     if fake:
         import fakeredis
 
-        return fakeredis.FakeRedis.from_url(url, decode_responses=True)
+        return fakeredis.FakeRedis.from_url(url, decode_responses=True, protocol=2)
     import redis
 
+    # protocol=2：Redis 5.x 没有 HELLO 命令，redis-py 8.x 默认 RESP3 会握手失败
     return redis.Redis.from_url(
-        url, decode_responses=True, socket_timeout=2, socket_connect_timeout=2
+        url,
+        decode_responses=True,
+        protocol=2,
+        socket_timeout=2,
+        socket_connect_timeout=2,
     )
 
 
